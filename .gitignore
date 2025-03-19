@@ -1,0 +1,22 @@
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器文件
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 环境文件
+.env
+.venv/
+venv/
+env/
+
+# 日志文件
+*.log
+
+# 临时文件
+tmp/
+temp/
