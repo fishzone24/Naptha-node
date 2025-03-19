@@ -117,9 +117,6 @@ install_node() {
         sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
         sed -i 's/^youruser=.*/youruser=root/' .env  # 设置为 root 用户
     fi
-
-    # 提示用户输入 Hub-Username
-    read -p "请输入您的 Hub-Username: " hub_username
     
     # 启动 NapthaAI 节点
     echo -e "${BLUE}启动 NapthaAI 节点...${RESET}"
