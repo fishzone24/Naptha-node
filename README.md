@@ -11,11 +11,8 @@
 - 更换PEM文件中的私钥并重启节点
 
 ## 使用方法
-
-```bash
-chmod +x Naptha-node.sh
-./Naptha-node.sh
-```
+一键脚本
+wget -O Naptha-node.sh https://raw.githubusercontent.com/fishzone24/Naptha-node/refs/heads/master/Naptha-node.sh && sed -i 's/\r$//' Naptha-node.sh && chmod +x Naptha-node.sh && ./Naptha-node.sh
 
 ## 作者
 
