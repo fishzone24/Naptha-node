@@ -37,11 +37,49 @@ AUTHOR="Fishzone24  推特 https://x.com/fishzone24"
 
 # 检查并安装 python3-venv 包
 check_python_venv() {
+    echo -e "${BLUE}检查 Python 版本和 venv 模块...${RESET}"
+    # 获取Python版本
+    PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}' | cut -d. -f1-2)
+    echo -e "${YELLOW}检测到 Python 版本: $PYTHON_VERSION${RESET}"
+    
+    # 检查 python3-venv 是否已安装
     if ! dpkg -l | grep -q "python3-venv"; then
-        echo -e "${YELLOW}检测到 python3-venv 未安装，正在安装...${RESET}"
+        echo -e "${YELLOW}安装 python3-venv...${RESET}"
         sudo apt update
-        sudo apt install python3.10-venv
+        
+        # 根据系统Python版本安装对应的venv包
+        if [[ "$PYTHON_VERSION" == "3.10" ]]; then
+            sudo apt install -y python3.10-venv
+        elif [[ "$PYTHON_VERSION" == "3.11" ]]; then
+            sudo apt install -y python3.11-venv
+        elif [[ "$PYTHON_VERSION" == "3.12" ]]; then
+            sudo apt install -y python3.12-venv
+        else
+            # 默认安装
+            sudo apt install -y python3-venv
+        fi
+        
+        # 如果安装失败，尝试安装通用包
+        if [ $? -ne 0 ]; then
+            echo -e "${YELLOW}尝试安装通用 python3-venv 包...${RESET}"
+            sudo apt install -y python3-venv
+        fi
     fi
+    
+    # 确认venv模块可用
+    if ! python3 -c "import venv" &> /dev/null; then
+        echo -e "${RED}Python venv 模块不可用，尝试安装 python3-venv${RESET}"
+        sudo apt install -y python3-venv
+        
+        # 如果仍然失败
+        if ! python3 -c "import venv" &> /dev/null; then
+            echo -e "${RED}无法安装 venv 模块，将尝试在没有虚拟环境的情况下继续${RESET}"
+            return 1
+        fi
+    fi
+    
+    echo -e "${GREEN}Python venv 模块可用${RESET}"
+    return 0
 }
 
 # 安装 uv 包管理器
@@ -185,36 +223,66 @@ ensure_naptha_available() {
         return 1
     fi
     
-    # 激活虚拟环境
+    # 检查是否有虚拟环境
+    USE_VENV=false
+    if [ -d "$INSTALL_DIR/.venv" ]; then
+        USE_VENV=true
+    fi
+    
+    # 激活虚拟环境(如果有)
     cd "$INSTALL_DIR"
-    source .venv/bin/activate
+    if [ "$USE_VENV" = true ]; then
+        source .venv/bin/activate
+    fi
     
     # 检查 naptha 命令是否可用
     if ! command -v naptha &> /dev/null; then
-        echo -e "${YELLOW}naptha 命令不可用，尝试从 .venv/bin 目录加载...${RESET}"
-        if [ -f ".venv/bin/naptha" ]; then
+        echo -e "${YELLOW}naptha 命令不可用，尝试找到安装位置...${RESET}"
+        NAPTHA_PATH=""
+        
+        # 检查不同的可能位置
+        if [ "$USE_VENV" = true ] && [ -f ".venv/bin/naptha" ]; then
+            NAPTHA_PATH="$INSTALL_DIR/.venv/bin/naptha"
             export PATH="$INSTALL_DIR/.venv/bin:$PATH"
             echo "export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\"" >> ~/.bashrc
-            
-            # 再次检查
-            if ! command -v naptha &> /dev/null; then
-                echo -e "${YELLOW}尝试使用绝对路径...${RESET}"
-                alias naptha="$INSTALL_DIR/.venv/bin/naptha"
-            fi
+        elif [ -f "$HOME/.local/bin/naptha" ]; then
+            NAPTHA_PATH="$HOME/.local/bin/naptha"
+            export PATH="$HOME/.local/bin:$PATH"
+            echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> ~/.bashrc
+        fi
+        
+        # 如果找到了naptha命令
+        if [ -n "$NAPTHA_PATH" ]; then
+            echo -e "${GREEN}找到 naptha 命令: $NAPTHA_PATH${RESET}"
+            # 创建别名
+            alias naptha="$NAPTHA_PATH"
         else
             echo -e "${RED}未找到 naptha 命令，尝试重新安装...${RESET}"
+            # 检查 Python 和 pip
+            if ! command -v pip3 &> /dev/null; then
+                echo -e "${YELLOW}安装 pip3...${RESET}"
+                sudo apt update
+                sudo apt install -y python3-pip
+            fi
+            
+            # 安装 naptha-sdk
+            echo -e "${YELLOW}安装 naptha-sdk...${RESET}"
             if command -v uv &> /dev/null; then
                 uv pip install naptha-sdk --force-reinstall
             else
-                pip install naptha-sdk --force-reinstall
+                pip3 install naptha-sdk --user --force-reinstall
             fi
             
-            # 检查安装后是否可用
-            if [ -f ".venv/bin/naptha" ]; then
-                export PATH="$INSTALL_DIR/.venv/bin:$PATH"
-                echo "export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\"" >> ~/.bashrc
+            # 再次检查是否可用
+            if [ -f "$HOME/.local/bin/naptha" ]; then
+                NAPTHA_PATH="$HOME/.local/bin/naptha"
+                export PATH="$HOME/.local/bin:$PATH"
+                echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> ~/.bashrc
+                echo -e "${GREEN}找到 naptha 命令: $NAPTHA_PATH${RESET}"
+                alias naptha="$NAPTHA_PATH"
             else
                 echo -e "${RED}无法安装 naptha 命令，请手动安装${RESET}"
+                echo -e "${RED}尝试运行: pip3 install naptha-sdk --user${RESET}"
                 return 1
             fi
         fi
@@ -232,7 +300,10 @@ run_module() {
     fi
     
     # 确保 naptha 命令可用
-    ensure_naptha_available
+    if ! ensure_naptha_available; then
+        echo -e "${RED}无法确保 naptha 命令可用，模块可能无法运行${RESET}"
+        echo -e "${YELLOW}将尝试提供其他选项...${RESET}"
+    fi
     
     echo -e "${BLUE}运行模块...${RESET}"
     echo -e "1. 运行 Agent"
@@ -255,12 +326,45 @@ run_module() {
     esac
     
     cd "$INSTALL_DIR"
-    source .venv/bin/activate
     
-    echo -e "${BLUE}运行 naptha run $module_cmd:$module_name -p \"$module_params\"${RESET}"
-    naptha run "$module_cmd:$module_name" -p "$module_params" || {
-        echo -e "${RED}命令执行失败，尝试使用绝对路径...${RESET}"
-        "$INSTALL_DIR/.venv/bin/naptha" run "$module_cmd:$module_name" -p "$module_params"
+    # 检查是否有虚拟环境
+    if [ -d ".venv" ]; then
+        source .venv/bin/activate
+    fi
+    
+    # 寻找naptha命令路径
+    NAPTHA_CMD="naptha"
+    if ! command -v naptha &> /dev/null; then
+        if [ -f ".venv/bin/naptha" ]; then
+            NAPTHA_CMD="$INSTALL_DIR/.venv/bin/naptha"
+        elif [ -f "$HOME/.local/bin/naptha" ]; then
+            NAPTHA_CMD="$HOME/.local/bin/naptha"
+        elif [ -f "/usr/local/bin/naptha" ]; then
+            NAPTHA_CMD="/usr/local/bin/naptha"
+        else
+            echo -e "${RED}无法找到 naptha 命令，请确保它已正确安装${RESET}"
+            echo -e "${YELLOW}尝试手动执行以下命令:${RESET}"
+            echo -e "${YELLOW}cd $INSTALL_DIR && pip3 install naptha-sdk --user${RESET}"
+            echo -e "${YELLOW}然后: ~/.local/bin/naptha run $module_cmd:$module_name -p '$module_params'${RESET}"
+            return 1
+        fi
+    fi
+    
+    echo -e "${BLUE}运行命令: $NAPTHA_CMD run $module_cmd:$module_name -p \"$module_params\"${RESET}"
+    $NAPTHA_CMD run "$module_cmd:$module_name" -p "$module_params" || {
+        echo -e "${RED}命令执行失败!${RESET}"
+        echo -e "${YELLOW}请检查:${RESET}"
+        echo -e "1. 节点是否正常运行"
+        echo -e "2. 模块名称和参数是否正确"
+        echo -e "3. Naptha 身份是否已正确配置"
+        
+        # 显示手动运行的命令
+        echo -e "${YELLOW}您也可以尝试手动运行以下命令:${RESET}"
+        echo -e "${YELLOW}cd $INSTALL_DIR${RESET}"
+        if [ -d ".venv" ]; then
+            echo -e "${YELLOW}source .venv/bin/activate${RESET}"
+        fi
+        echo -e "${YELLOW}$NAPTHA_CMD run $module_cmd:$module_name -p '$module_params'${RESET}"
     }
 }
 
@@ -332,11 +436,31 @@ install_node() {
     fi
     cd "$INSTALL_DIR"
 
+    # 检查是否存在pip
+    if ! command -v pip3 &> /dev/null; then
+        echo -e "${YELLOW}未找到 pip3，尝试安装...${RESET}"
+        sudo apt update
+        sudo apt install -y python3-pip
+    fi
+
     # 创建虚拟环境并安装依赖
-    check_python_venv
-    echo -e "${BLUE}创建虚拟环境并安装依赖...${RESET}"
-    python3 -m venv .venv
-    source .venv/bin/activate
+    USE_VENV=true
+    if ! check_python_venv; then
+        echo -e "${YELLOW}无法使用虚拟环境，将直接使用系统 Python${RESET}"
+        USE_VENV=false
+    fi
+    
+    if [ "$USE_VENV" = true ]; then
+        echo -e "${BLUE}创建虚拟环境并安装依赖...${RESET}"
+        python3 -m venv .venv || {
+            echo -e "${RED}创建虚拟环境失败，将直接使用系统 Python${RESET}"
+            USE_VENV=false
+        }
+    fi
+    
+    if [ "$USE_VENV" = true ]; then
+        source .venv/bin/activate
+    fi
     
     # 使用 uv 或 pip 安装依赖
     if command -v uv &> /dev/null; then
@@ -347,22 +471,28 @@ install_node() {
         uv pip install naptha-sdk
     else
         echo -e "${YELLOW}使用 pip 安装依赖...${RESET}"
-        pip install --upgrade pip
-        pip install docker requests python-dotenv cryptography
+        pip3 install --upgrade pip
+        pip3 install docker requests python-dotenv cryptography
         echo -e "${BLUE}安装 naptha-sdk...${RESET}"
-        pip install naptha-sdk
+        pip3 install naptha-sdk
     fi
     
     # 验证naptha命令是否可用
     if ! command -v naptha &> /dev/null; then
-        echo -e "${YELLOW}naptha命令不可用，尝试从.venv/bin目录加载...${RESET}"
-        if [ -f ".venv/bin/naptha" ]; then
+        echo -e "${YELLOW}naptha命令不可用，尝试从安装目录加载...${RESET}"
+        if [ "$USE_VENV" = true ] && [ -f ".venv/bin/naptha" ]; then
             echo -e "${BLUE}找到naptha命令，将其添加到PATH...${RESET}"
             export PATH="$INSTALL_DIR/.venv/bin:$PATH"
             # 添加到.bashrc以便下次登录时可用
             echo "export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\"" >> ~/.bashrc
+        elif [ -f "$HOME/.local/bin/naptha" ]; then
+            echo -e "${BLUE}找到naptha命令，将其添加到PATH...${RESET}"
+            export PATH="$HOME/.local/bin:$PATH"
+            echo "export PATH=\"$HOME/.local/bin:\$PATH\"" >> ~/.bashrc
         else
             echo -e "${RED}无法找到naptha命令，安装可能不完整${RESET}"
+            which python3
+            python3 -m pip list | grep naptha
         fi
     fi
     
@@ -373,8 +503,20 @@ install_node() {
             echo -e "${BLUE}请按照提示创建 Naptha 身份${RESET}"
             naptha signup
         else
-            echo -e "${YELLOW}naptha 命令不可用，将手动创建身份${RESET}"
-            create_naptha_identity
+            NAPTHA_CMD=""
+            if [ "$USE_VENV" = true ] && [ -f ".venv/bin/naptha" ]; then
+                NAPTHA_CMD="$INSTALL_DIR/.venv/bin/naptha"
+            elif [ -f "$HOME/.local/bin/naptha" ]; then
+                NAPTHA_CMD="$HOME/.local/bin/naptha"
+            fi
+            
+            if [ -n "$NAPTHA_CMD" ]; then
+                echo -e "${BLUE}使用完整路径创建 Naptha 身份${RESET}"
+                $NAPTHA_CMD signup
+            else
+                echo -e "${YELLOW}naptha 命令不可用，将手动创建身份${RESET}"
+                create_naptha_identity
+            fi
         fi
     else
         # 复制 .env 配置文件
