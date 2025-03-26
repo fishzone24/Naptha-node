@@ -28,18 +28,21 @@ install_docker() {
     echo -e "${GREEN}Docker 安装完成！${RESET}"
 }
 
-# 安装 NapthaAI 节点
-install_node() {
-    echo -e "${BLUE}正在安装 NapthaAI 节点...${RESET}"
+# 用户注册
+register_user() {
+    echo -e "${BLUE}开始 NapthaAI 用户注册...${RESET}"
     
-    # 创建必要的目录
-    mkdir -p "$INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR/data/surreal"
-    mkdir -p "$INSTALL_DIR/data/rabbitmq"
-    mkdir -p "$INSTALL_DIR/data/postgres"
+    # 提示用户输入用户名和密码
+    read -p "请输入您的 NapthaAI Hub 用户名: " HUB_USERNAME
+    read -s -p "请输入您的 NapthaAI Hub 密码: " HUB_PASSWORD
+    echo
     
     # 创建 .env 文件
-    cat > "$INSTALL_DIR/.env" << 'EOL'
+    cat > "$INSTALL_DIR/.env" << EOL
+# 用户认证
+HUB_USERNAME=${HUB_USERNAME}
+HUB_PASSWORD=${HUB_PASSWORD}
+
 # Docker 设置
 DOCKER_COMPOSE_VERSION=v2.24.5
 DOCKER_COMPOSE_ARCH=linux-x86_64
@@ -66,6 +69,19 @@ REGISTER_NODE_WITH_HUB=true
 LOCAL_HUB=true
 EOL
 
+    echo -e "${GREEN}用户注册完成！${RESET}"
+}
+
+# 安装 NapthaAI 节点
+install_node() {
+    echo -e "${BLUE}正在安装 NapthaAI 节点...${RESET}"
+    
+    # 创建必要的目录
+    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR/data/surreal"
+    mkdir -p "$INSTALL_DIR/data/rabbitmq"
+    mkdir -p "$INSTALL_DIR/data/postgres"
+    
     # 创建 docker-compose.yml 文件
     cat > "$INSTALL_DIR/docker-compose.yml" << 'EOL'
 version: '3.8'
@@ -80,6 +96,8 @@ services:
       - NODE_PORT=7001
       - REGISTER_NODE_WITH_HUB=true
       - LOCAL_HUB=true
+      - HUB_USERNAME=${HUB_USERNAME}
+      - HUB_PASSWORD=${HUB_PASSWORD}
     volumes:
       - ./data:/data
     depends_on:
@@ -153,6 +171,7 @@ EOL
 if [ "$1" = "--auto-install" ]; then
     echo -e "${BLUE}开始自动安装 NapthaAI 节点...${RESET}"
     install_docker
+    register_user
     install_node
     echo -e "${GREEN}安装完成！${RESET}"
     echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
