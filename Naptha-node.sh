@@ -195,216 +195,340 @@ create_virtualenv() {
 # 手动创建身份（不依赖naptha命令）
 manual_create_identity() {
     echo -e "${BLUE}手动创建 Naptha 身份...${RESET}"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    # 询问用户输入用户名和密码
     read -p "请输入用户名: " username
     read -s -p "请输入密码: " password
     echo
     
-    # 创建目录（如果不存在）
-    if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${YELLOW}Naptha Node 目录不存在，将创建...${RESET}"
-        mkdir -p "$INSTALL_DIR"
-    fi
-    
     # 选择Hub URL
-    echo -e "${BLUE}请选择 Hub URL:${RESET}"
-    echo -e "1. 默认 Hub URL (ws://localhost:3001/rpc)"
-    echo -e "2. 官方 Hub URL (正式环境)"
-    echo -e "3. 自定义 Hub URL"
-    read -p "请选择: " hub_choice
+    echo -e "${YELLOW}请选择 Hub URL:${RESET}"
+    echo "1. 默认本地Hub (ws://localhost:3001/rpc)"
+    echo "2. 官方Hub (wss://hub.naptha.ai/rpc)"
+    echo "3. 自定义Hub URL"
+    read -p "请选择 (默认: 2): " hub_choice
     
     case "$hub_choice" in
-        1) HUB_URL="ws://localhost:3001/rpc" ;;
-        2) HUB_URL="wss://hub.naptha.ai/rpc" ;;
+        1) hub_url="ws://localhost:3001/rpc" ;;
         3) 
-            read -p "请输入自定义 Hub URL: " custom_hub_url
-            HUB_URL="$custom_hub_url"
+            read -p "请输入自定义Hub URL: " hub_url
             ;;
-        *) 
-            echo -e "${YELLOW}无效选择，使用官方 Hub URL${RESET}"
-            HUB_URL="wss://hub.naptha.ai/rpc"
-            ;;
+        2|*) hub_url="wss://hub.naptha.ai/rpc" ;;
     esac
     
     # 选择Node URL
-    echo -e "${BLUE}请选择 Node URL:${RESET}"
-    echo -e "1. 默认本地 Node URL (http://localhost:7001)"
-    echo -e "2. 官方 Node URL (node.naptha.ai)"
-    echo -e "3. 自定义 Node URL"
-    read -p "请选择: " node_choice
+    echo -e "${YELLOW}请选择 Node URL:${RESET}"
+    echo "1. 本地Node (http://localhost:7001)"
+    echo "2. 自定义Node URL"
+    read -p "请选择 (默认: 1): " node_choice
     
     case "$node_choice" in
-        1) NODE_URL="http://localhost:7001" ;;
-        2) NODE_URL="https://node.naptha.ai" ;;
-        3) 
-            read -p "请输入自定义 Node URL: " custom_node_url
-            NODE_URL="$custom_node_url"
+        2) 
+            read -p "请输入自定义Node URL: " node_url
             ;;
-        *) 
-            echo -e "${YELLOW}无效选择，使用本地 Node URL${RESET}"
-            NODE_URL="http://localhost:7001"
-            ;;
+        1|*) node_url="http://localhost:7001" ;;
     esac
     
-    # 创建 .env 文件
-    cat > "$INSTALL_DIR/.env" << EOF
+    # 创建或更新 .env 文件
+    if [ -f ".env" ]; then
+        echo -e "${YELLOW}更新 .env 文件...${RESET}"
+        sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$username/" .env
+        sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env
+        sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env
+        sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env
+        # 设置默认值
+        sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
+        sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
+        sed -i 's/^youruser=.*/youruser=root/' .env
+    else
+        echo -e "${YELLOW}创建 .env 文件...${RESET}"
+        if [ -f ".env.example" ]; then
+            cp .env.example .env
+            sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$username/" .env
+            sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env
+            sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env || echo "HUB_URL=$hub_url" >> .env
+            sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env || echo "NODE_URL=$node_url" >> .env
+            # 设置默认值
+            sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
+            sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
+            sed -i 's/^youruser=.*/youruser=root/' .env
+        else
+            # 创建一个新的.env文件
+            cat > .env << EOF
 HUB_USERNAME=$username
 HUB_PASSWORD=$password
-HUB_URL=$HUB_URL
-NODE_URL=$NODE_URL
+HUB_URL=$hub_url
+NODE_URL=$node_url
 LAUNCH_DOCKER=true
 LLM_BACKEND=ollama
 youruser=root
 EOF
+        fi
+    fi
     
     # 生成私钥
-    echo -e "${BLUE}生成私钥...${RESET}"
-    PEM_FILE="$INSTALL_DIR/${username}.pem"
-    openssl genrsa -out "$PEM_FILE" 2048
+    echo -e "${YELLOW}生成私钥...${RESET}"
+    PRIVATE_KEY=""
     
-    if [ -f "$PEM_FILE" ]; then
-        PRIVATE_KEY=$(cat "$PEM_FILE")
-        
-        # 更新 .env 文件
-        echo "PRIVATE_KEY=$PRIVATE_KEY" >> "$INSTALL_DIR/.env"
-        
-        echo -e "${GREEN}Naptha 身份创建成功！${RESET}"
-        echo -e "${YELLOW}用户名: $username${RESET}"
-        echo -e "${YELLOW}私钥已保存到: $PEM_FILE${RESET}"
-        echo -e "${YELLOW}环境配置已保存到: $INSTALL_DIR/.env${RESET}"
-        echo -e "${YELLOW}Hub URL: $HUB_URL${RESET}"
-        echo -e "${YELLOW}Node URL: $NODE_URL${RESET}"
+    # 尝试使用openssl生成私钥
+    if command -v openssl &> /dev/null; then
+        PRIVATE_KEY=$(openssl rand -hex 32)
+    # 使用较简单的方法生成私钥
     else
-        echo -e "${RED}私钥生成失败！${RESET}"
-        
-        # 尝试使用不同的方法生成
-        echo -e "${YELLOW}尝试使用 ssh-keygen 生成 RSA 密钥...${RESET}"
-        ssh-keygen -t rsa -b 2048 -f "$PEM_FILE" -N ""
-        
-        if [ -f "$PEM_FILE" ]; then
-            PRIVATE_KEY=$(cat "$PEM_FILE")
-            
-            # 更新 .env 文件
-            echo "PRIVATE_KEY=$PRIVATE_KEY" >> "$INSTALL_DIR/.env"
-            
-            echo -e "${GREEN}Naptha 身份创建成功（使用 ssh-keygen）！${RESET}"
-            echo -e "${YELLOW}用户名: $username${RESET}"
-            echo -e "${YELLOW}私钥已保存到: $PEM_FILE${RESET}"
-            echo -e "${YELLOW}环境配置已保存到: $INSTALL_DIR/.env${RESET}"
-            echo -e "${YELLOW}Hub URL: $HUB_URL${RESET}"
-            echo -e "${YELLOW}Node URL: $NODE_URL${RESET}"
-        else
-            echo -e "${RED}无法创建私钥文件，请检查系统权限和安装！${RESET}"
-            return 1
-        fi
+        # 基于当前时间和随机数生成一个简单的私钥
+        RANDOM_PART=$(head /dev/urandom | tr -dc 'a-f0-9' | head -c 64 2>/dev/null || echo "fallback$(date +%s)$(echo $RANDOM | md5sum)")
+        PRIVATE_KEY=${RANDOM_PART:0:64}
     fi
     
-    return 0
+    # 创建配置目录(如果不存在)
+    mkdir -p "$HOME/.naptha"
+    
+    # 更新naptha配置
+    cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "$hub_url",
+    "default_node_url": "$node_url",
+    "identities": {
+        "$username": "$PRIVATE_KEY"
+    }
+}
+EOF
+    
+    # 生成PEM文件
+    ensure_pem_file
+    
+    echo -e "${GREEN}Naptha 身份创建成功！${RESET}"
+    echo -e "${YELLOW}用户名: $username${RESET}"
+    echo -e "${YELLOW}Hub URL: $hub_url${RESET}"
+    echo -e "${YELLOW}Node URL: $node_url${RESET}"
+    echo -e "${YELLOW}配置已保存到: $INSTALL_DIR/.env${RESET}"
+    echo -e "${YELLOW}Naptha SDK配置已保存到: $HOME/.naptha/config.json${RESET}"
 }
 
-# 配置环境变量
-configure_env() {
-    if [ ! -f "$INSTALL_DIR/.env" ]; then
-        echo -e "${RED}未找到 .env 文件，请先创建 Naptha 身份！${RESET}"
-        return 1
-    fi
-    
-    echo -e "${BLUE}配置环境变量...${RESET}"
-    read -p "请输入 Hub-Username: " hub_username
-    read -s -p "请输入 Hub-Password: " hub_password
-    echo
-    
-    # 询问是否修改Hub URL和Node URL
-    read -p "是否需要修改 Hub URL? (y/n): " change_hub
-    if [[ "$change_hub" == "y" ]]; then
-        echo -e "${BLUE}请选择 Hub URL:${RESET}"
-        echo -e "1. 默认 Hub URL (ws://localhost:3001/rpc)"
-        echo -e "2. 官方 Hub URL (正式环境)"
-        echo -e "3. 自定义 Hub URL"
-        read -p "请选择: " hub_choice
-        
-        case "$hub_choice" in
-            1) hub_url="ws://localhost:3001/rpc" ;;
-            2) hub_url="wss://hub.naptha.ai/rpc" ;;
-            3) 
-                read -p "请输入自定义 Hub URL: " custom_hub_url
-                hub_url="$custom_hub_url"
-                ;;
-            *) 
-                echo -e "${YELLOW}无效选择，使用官方 Hub URL${RESET}"
-                hub_url="wss://hub.naptha.ai/rpc"
-                ;;
-        esac
-        
-        # 更新.env文件中的HUB_URL
-        if grep -q "HUB_URL" "$INSTALL_DIR/.env"; then
-            sed -i "s|^HUB_URL=.*|HUB_URL=$hub_url|" "$INSTALL_DIR/.env"
-        else
-            echo "HUB_URL=$hub_url" >> "$INSTALL_DIR/.env"
-        fi
-    fi
-    
-    read -p "是否需要修改 Node URL? (y/n): " change_node
-    if [[ "$change_node" == "y" ]]; then
-        echo -e "${BLUE}请选择 Node URL:${RESET}"
-        echo -e "1. 默认本地 Node URL (http://localhost:7001)"
-        echo -e "2. 官方 Node URL (node.naptha.ai)"
-        echo -e "3. 自定义 Node URL"
-        read -p "请选择: " node_choice
-        
-        case "$node_choice" in
-            1) node_url="http://localhost:7001" ;;
-            2) node_url="https://node.naptha.ai" ;;
-            3) 
-                read -p "请输入自定义 Node URL: " custom_node_url
-                node_url="$custom_node_url"
-                ;;
-            *) 
-                echo -e "${YELLOW}无效选择，使用本地 Node URL${RESET}"
-                node_url="http://localhost:7001"
-                ;;
-        esac
-        
-        # 更新.env文件中的NODE_URL
-        if grep -q "NODE_URL" "$INSTALL_DIR/.env"; then
-            sed -i "s|^NODE_URL=.*|NODE_URL=$node_url|" "$INSTALL_DIR/.env"
-        else
-            echo "NODE_URL=$node_url" >> "$INSTALL_DIR/.env"
-        fi
-    fi
-    
-    # 更新 .env 文件
-    sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$hub_username/" "$INSTALL_DIR/.env"
-    sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$hub_password/" "$INSTALL_DIR/.env"
-    
-    echo -e "${GREEN}环境变量配置成功！${RESET}"
-}
-
-# 显示或编辑环境变量
+# 显示和编辑当前环境变量
 show_env() {
-    if [ ! -f "$INSTALL_DIR/.env" ]; then
-        echo -e "${RED}未找到 .env 文件，请先创建 Naptha 身份！${RESET}"
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
         return 1
     fi
     
-    echo -e "${BLUE}当前环境变量:${RESET}"
-    cat "$INSTALL_DIR/.env" | grep -v "PRIVATE_KEY"
+    cd "$INSTALL_DIR"
     
-    echo -e "\n${BLUE}操作选项:${RESET}"
-    echo -e "1. 编辑环境变量文件"
-    echo -e "2. 返回主菜单"
+    if [ ! -f ".env" ]; then
+        echo -e "${RED}未找到 .env 文件！${RESET}"
+        return 1
+    fi
+    
+    echo -e "${BLUE}当前环境变量配置:${RESET}"
+    # 过滤掉密码信息
+    grep -v "PASSWORD\|PRIVATE_KEY\|SECRET" .env | cat -n
+    
+    echo -e "\n${YELLOW}选择要编辑的变量:${RESET}"
+    echo "1. 用户名 (HUB_USERNAME)"
+    echo "2. 密码 (HUB_PASSWORD)"
+    echo "3. Hub URL (HUB_URL)"
+    echo "4. Node URL (NODE_URL)"
+    echo "5. 启动Docker (LAUNCH_DOCKER)"
+    echo "6. LLM后端 (LLM_BACKEND)"
+    echo "7. 使用文本编辑器编辑整个文件"
+    echo "0. 返回"
+    
     read -p "请选择: " env_choice
     
     case "$env_choice" in
-        1)
-            nano "$INSTALL_DIR/.env"
-            echo -e "${GREEN}环境变量已更新！${RESET}"
+        1) 
+            read -p "输入新的用户名: " new_username
+            sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$new_username/" .env
+            echo -e "${GREEN}用户名已更新！${RESET}"
             ;;
         2)
-            return 0
+            read -s -p "输入新的密码: " new_password
+            echo
+            sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$new_password/" .env
+            echo -e "${GREEN}密码已更新！${RESET}"
+            ;;
+        3)
+            echo -e "${YELLOW}选择 Hub URL:${RESET}"
+            echo "1. 默认本地Hub (ws://localhost:3001/rpc)"
+            echo "2. 官方Hub (wss://hub.naptha.ai/rpc)"
+            echo "3. 自定义 Hub URL"
+            read -p "请选择: " hub_choice
+            
+            case "$hub_choice" in
+                1) new_hub_url="ws://localhost:3001/rpc" ;;
+                2) new_hub_url="wss://hub.naptha.ai/rpc" ;;
+                3) 
+                    read -p "输入自定义Hub URL: " new_hub_url
+                    ;;
+                *) 
+                    echo -e "${YELLOW}无效选择，不作更改${RESET}"
+                    return
+                    ;;
+            esac
+            
+            # 检查HUB_URL是否存在
+            if grep -q "^HUB_URL=" .env; then
+                sed -i "s#^HUB_URL=.*#HUB_URL=$new_hub_url#" .env
+            else
+                echo "HUB_URL=$new_hub_url" >> .env
+            fi
+            
+            echo -e "${GREEN}Hub URL已更新为: $new_hub_url${RESET}"
+            
+            # 询问是否也要更新naptha-sdk配置
+            read -p "是否同时更新naptha-sdk配置? (y/n): " update_sdk
+            if [[ "$update_sdk" == "y" ]]; then
+                # 创建目录(如果不存在)
+                mkdir -p "$HOME/.naptha"
+                
+                # 检查是否存在配置文件
+                if [ -f "$HOME/.naptha/config.json" ]; then
+                    # 备份现有配置
+                    cp "$HOME/.naptha/config.json" "$HOME/.naptha/config.json.bak"
+                    
+                    # 使用jq更新(如果可用)
+                    if command -v jq &> /dev/null; then
+                        jq --arg url "$new_hub_url" '.hub_url = $url' "$HOME/.naptha/config.json.bak" > "$HOME/.naptha/config.json"
+                    else
+                        # 简单的文本替换
+                        sed -i "s|\"hub_url\":.*|\"hub_url\": \"$new_hub_url\",|" "$HOME/.naptha/config.json"
+                    fi
+                else
+                    # 创建新配置
+                    cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "$new_hub_url",
+    "default_node_url": "http://localhost:7001"
+}
+EOF
+                fi
+                
+                echo -e "${GREEN}naptha-sdk配置已更新！${RESET}"
+            fi
+            ;;
+        4)
+            echo -e "${YELLOW}选择 Node URL:${RESET}"
+            echo "1. 本地Node (http://localhost:7001)"
+            echo "2. 自定义Node URL"
+            read -p "请选择: " node_choice
+            
+            case "$node_choice" in
+                1) new_node_url="http://localhost:7001" ;;
+                2) 
+                    read -p "输入自定义Node URL: " new_node_url
+                    ;;
+                *) 
+                    echo -e "${YELLOW}无效选择，不作更改${RESET}"
+                    return
+                    ;;
+            esac
+            
+            # 检查NODE_URL是否存在
+            if grep -q "^NODE_URL=" .env; then
+                sed -i "s#^NODE_URL=.*#NODE_URL=$new_node_url#" .env
+            else
+                echo "NODE_URL=$new_node_url" >> .env
+            fi
+            
+            echo -e "${GREEN}Node URL已更新为: $new_node_url${RESET}"
+            
+            # 询问是否也要更新naptha-sdk配置
+            read -p "是否同时更新naptha-sdk配置? (y/n): " update_sdk
+            if [[ "$update_sdk" == "y" ]]; then
+                # 创建目录(如果不存在)
+                mkdir -p "$HOME/.naptha"
+                
+                # 检查是否存在配置文件
+                if [ -f "$HOME/.naptha/config.json" ]; then
+                    # 备份现有配置
+                    cp "$HOME/.naptha/config.json" "$HOME/.naptha/config.json.bak"
+                    
+                    # 使用jq更新(如果可用)
+                    if command -v jq &> /dev/null; then
+                        jq --arg url "$new_node_url" '.default_node_url = $url' "$HOME/.naptha/config.json.bak" > "$HOME/.naptha/config.json"
+                    else
+                        # 简单的文本替换
+                        sed -i "s|\"default_node_url\":.*|\"default_node_url\": \"$new_node_url\"|" "$HOME/.naptha/config.json"
+                    fi
+                else
+                    # 创建新配置
+                    cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "wss://hub.naptha.ai/rpc",
+    "default_node_url": "$new_node_url"
+}
+EOF
+                fi
+                
+                echo -e "${GREEN}naptha-sdk配置已更新！${RESET}"
+            fi
+            ;;
+        5)
+            echo -e "${YELLOW}选择是否启动Docker:${RESET}"
+            echo "1. 是 (true)"
+            echo "2. 否 (false)"
+            read -p "请选择: " docker_choice
+            
+            case "$docker_choice" in
+                1) new_docker="true" ;;
+                2) new_docker="false" ;;
+                *) 
+                    echo -e "${YELLOW}无效选择，不作更改${RESET}"
+                    return
+                    ;;
+            esac
+            
+            sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=$new_docker/" .env
+            echo -e "${GREEN}LAUNCH_DOCKER 已更新为: $new_docker${RESET}"
+            ;;
+        6)
+            echo -e "${YELLOW}选择 LLM 后端:${RESET}"
+            echo "1. Ollama (ollama)"
+            echo "2. Open AI (openai)"
+            echo "3. Claude (anthropic)"
+            echo "4. Local (local)"
+            echo "5. 自定义"
+            read -p "请选择: " llm_choice
+            
+            case "$llm_choice" in
+                1) new_llm="ollama" ;;
+                2) new_llm="openai" ;;
+                3) new_llm="anthropic" ;;
+                4) new_llm="local" ;;
+                5) 
+                    read -p "输入自定义LLM后端: " new_llm
+                    ;;
+                *) 
+                    echo -e "${YELLOW}无效选择，不作更改${RESET}"
+                    return
+                    ;;
+            esac
+            
+            sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=$new_llm/" .env
+            echo -e "${GREEN}LLM_BACKEND 已更新为: $new_llm${RESET}"
+            ;;
+        7)
+            # 使用文本编辑器编辑
+            if command -v nano &> /dev/null; then
+                nano .env
+            elif command -v vim &> /dev/null; then
+                vim .env
+            else
+                echo -e "${RED}未找到可用的文本编辑器(nano或vim)${RESET}"
+            fi
+            ;;
+        0)
+            return
             ;;
         *)
-            echo -e "${RED}无效选择，返回主菜单${RESET}"
-            return 0
+            echo -e "${RED}无效选项！${RESET}"
             ;;
     esac
 }
@@ -1213,6 +1337,230 @@ EOF
     echo -e "${GREEN}配置检查完成！${RESET}"
 }
 
+# 创建Naptha身份
+create_naptha_identity() {
+    echo -e "${BLUE}创建 Naptha 身份...${RESET}"
+    
+    # 确保 naptha 命令可用
+    if ! ensure_naptha_available; then
+        echo -e "${RED}无法确保 naptha 命令可用，将使用手动方式创建身份${RESET}"
+        manual_create_identity
+        return
+    fi
+    
+    echo -e "${YELLOW}您可以选择使用以下方式创建身份:${RESET}"
+    echo -e "1. 使用 naptha signup 命令创建(需要连接到Hub)"
+    echo -e "2. 手动创建(推荐，避免连接问题)"
+    read -p "请选择: " identity_choice
+    
+    case "$identity_choice" in
+        1) 
+            # 使用naptha命令创建
+            echo -e "${BLUE}使用 naptha signup 命令创建身份...${RESET}"
+            read -p "请输入用户名: " username
+            read -s -p "请输入密码: " password
+            echo
+            
+            # 执行naptha signup命令
+            cd "$INSTALL_DIR"
+            SIGNUP_OUTPUT=$($NAPTHA_CMD signup --username "$username" --password "$password" 2>&1)
+            
+            # 检查是否成功
+            if [[ "$SIGNUP_OUTPUT" == *"Signup successful"* ]] || [[ "$SIGNUP_OUTPUT" == *"成功"* ]]; then
+                echo -e "${GREEN}Naptha 身份创建成功！${RESET}"
+                
+                # 创建或更新 .env 文件
+                if [ ! -f ".env" ]; then
+                    cp .env.example .env || echo "HUB_USERNAME=$username" > .env
+                fi
+                
+                # 更新用户名和密码
+                sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$username/" .env
+                sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env
+                
+                # 设置默认值
+                sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
+                sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
+                sed -i 's/^youruser=.*/youruser=root/' .env
+                
+                # 生成PEM文件
+                ensure_pem_file
+                
+                echo -e "${YELLOW}环境配置已保存到: $INSTALL_DIR/.env${RESET}"
+            else
+                echo -e "${RED}注册失败! 错误信息: ${RESET}"
+                echo "$SIGNUP_OUTPUT"
+                echo -e "${YELLOW}尝试使用手动方式创建身份...${RESET}"
+                manual_create_identity
+            fi
+            ;;
+        2|*)
+            # 使用手动方式创建
+            manual_create_identity
+            ;;
+    esac
+}
+
+# 配置环境变量
+configure_env() {
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    echo -e "${BLUE}配置环境变量...${RESET}"
+    read -p "请输入用户名 (HUB_USERNAME): " hub_username
+    read -s -p "请输入密码 (HUB_PASSWORD): " hub_password
+    echo
+    
+    # 选择Hub URL
+    echo -e "${YELLOW}请选择 Hub URL:${RESET}"
+    echo "1. 默认本地Hub (ws://localhost:3001/rpc)"
+    echo "2. 官方Hub (wss://hub.naptha.ai/rpc)"
+    echo "3. 自定义Hub URL"
+    read -p "请选择 (默认: 2): " hub_choice
+    
+    case "$hub_choice" in
+        1) hub_url="ws://localhost:3001/rpc" ;;
+        3) 
+            read -p "请输入自定义Hub URL: " hub_url
+            ;;
+        2|*) hub_url="wss://hub.naptha.ai/rpc" ;;
+    esac
+    
+    # 选择Node URL
+    echo -e "${YELLOW}请选择 Node URL:${RESET}"
+    echo "1. 本地Node (http://localhost:7001)"
+    echo "2. 自定义Node URL"
+    read -p "请选择 (默认: 1): " node_choice
+    
+    case "$node_choice" in
+        2) 
+            read -p "请输入自定义Node URL: " node_url
+            ;;
+        1|*) node_url="http://localhost:7001" ;;
+    esac
+    
+    # 选择是否启动Docker
+    echo -e "${YELLOW}是否启动Docker:${RESET}"
+    echo "1. 是 (true)"
+    echo "2. 否 (false)"
+    read -p "请选择 (默认: 1): " docker_choice
+    
+    case "$docker_choice" in
+        2) launch_docker="false" ;;
+        1|*) launch_docker="true" ;;
+    esac
+    
+    # 选择LLM后端
+    echo -e "${YELLOW}选择LLM后端:${RESET}"
+    echo "1. Ollama (ollama)"
+    echo "2. Open AI (openai)"
+    echo "3. Claude (anthropic)"
+    echo "4. Local (local)"
+    echo "5. 自定义"
+    read -p "请选择 (默认: 1): " llm_choice
+    
+    case "$llm_choice" in
+        2) llm_backend="openai" ;;
+        3) llm_backend="anthropic" ;;
+        4) llm_backend="local" ;;
+        5) 
+            read -p "请输入自定义LLM后端: " llm_backend
+            ;;
+        1|*) llm_backend="ollama" ;;
+    esac
+    
+    # 创建或更新 .env 文件
+    if [ -f ".env" ]; then
+        echo -e "${YELLOW}更新 .env 文件...${RESET}"
+        # 更新用户名和密码
+        sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$hub_username/" .env
+        sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$hub_password/" .env
+        
+        # 更新URL
+        if grep -q "^HUB_URL=" .env; then
+            sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env
+        else
+            echo "HUB_URL=$hub_url" >> .env
+        fi
+        
+        if grep -q "^NODE_URL=" .env; then
+            sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env
+        else
+            echo "NODE_URL=$node_url" >> .env
+        fi
+        
+        # 更新Docker和LLM设置
+        sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=$launch_docker/" .env
+        sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=$llm_backend/" .env
+        
+        # 默认用户设置
+        sed -i 's/^youruser=.*/youruser=root/' .env
+    else
+        echo -e "${YELLOW}创建 .env 文件...${RESET}"
+        if [ -f ".env.example" ]; then
+            cp .env.example .env
+            # 更新配置
+            sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$hub_username/" .env
+            sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$hub_password/" .env
+            sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env || echo "HUB_URL=$hub_url" >> .env
+            sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env || echo "NODE_URL=$node_url" >> .env
+            sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=$launch_docker/" .env
+            sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=$llm_backend/" .env
+            sed -i 's/^youruser=.*/youruser=root/' .env
+        else
+            # 创建新的.env文件
+            cat > .env << EOF
+HUB_USERNAME=$hub_username
+HUB_PASSWORD=$hub_password
+HUB_URL=$hub_url
+NODE_URL=$node_url
+LAUNCH_DOCKER=$launch_docker
+LLM_BACKEND=$llm_backend
+youruser=root
+EOF
+        fi
+    fi
+    
+    # 询问是否同时更新naptha-sdk配置
+    read -p "是否同时更新naptha-sdk配置? (y/n): " update_sdk
+    if [[ "$update_sdk" == "y" ]]; then
+        # 创建目录(如果不存在)
+        mkdir -p "$HOME/.naptha"
+        
+        # 检查是否存在配置文件
+        if [ -f "$HOME/.naptha/config.json" ]; then
+            # 备份现有配置
+            cp "$HOME/.naptha/config.json" "$HOME/.naptha/config.json.bak"
+            
+            # 使用jq更新(如果可用)
+            if command -v jq &> /dev/null; then
+                jq --arg huburl "$hub_url" --arg nodeurl "$node_url" '.hub_url = $huburl | .default_node_url = $nodeurl' "$HOME/.naptha/config.json.bak" > "$HOME/.naptha/config.json"
+            else
+                # 简单的文本替换
+                sed -i "s|\"hub_url\":.*|\"hub_url\": \"$hub_url\",|" "$HOME/.naptha/config.json"
+                sed -i "s|\"default_node_url\":.*|\"default_node_url\": \"$node_url\"|" "$HOME/.naptha/config.json"
+            fi
+        else
+            # 创建新配置
+            cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "$hub_url",
+    "default_node_url": "$node_url"
+}
+EOF
+        fi
+        
+        echo -e "${GREEN}naptha-sdk配置已更新！${RESET}"
+    fi
+    
+    echo -e "${GREEN}环境变量配置完成！${RESET}"
+    echo -e "${YELLOW}配置已保存到: $INSTALL_DIR/.env${RESET}"
+}
+
 # 菜单
 while true; do
     echo -e "\n${BLUE}NapthaAI 一键管理脚本 - ${AUTHOR}${RESET}"
@@ -1235,7 +1583,7 @@ while true; do
 
     case "$choice" in
         1) install_node ;;
-        2) manual_create_identity ;;
+        2) create_naptha_identity ;;
         3) configure_env ;;
         4) show_env ;;
         5) manage_secrets ;;
