@@ -48,6 +48,19 @@ check_python_venv() {
 install_uv() {
     echo -e "${BLUE}安装 uv 包管理器...${RESET}"
     curl -LsSf https://astral.sh/uv/install.sh | sh
+    
+    # 添加uv到PATH
+    export PATH="$HOME/.cargo/bin:$PATH"
+    
+    # 检查是否安装成功
+    if ! command -v uv &> /dev/null; then
+        echo -e "${YELLOW}uv安装后需要重新加载环境变量，尝试从~/.cargo/bin加载...${RESET}"
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            alias uv="$HOME/.cargo/bin/uv"
+        else
+            echo -e "${RED}无法找到uv命令，将使用pip代替${RESET}"
+        fi
+    fi
 }
 
 # 安装 Docker 和 Docker Compose
@@ -164,8 +177,63 @@ manage_secrets() {
     esac
 }
 
+# 确保 naptha 命令可用
+ensure_naptha_available() {
+    echo -e "${BLUE}确保 naptha 命令可用...${RESET}"
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    # 激活虚拟环境
+    cd "$INSTALL_DIR"
+    source .venv/bin/activate
+    
+    # 检查 naptha 命令是否可用
+    if ! command -v naptha &> /dev/null; then
+        echo -e "${YELLOW}naptha 命令不可用，尝试从 .venv/bin 目录加载...${RESET}"
+        if [ -f ".venv/bin/naptha" ]; then
+            export PATH="$INSTALL_DIR/.venv/bin:$PATH"
+            echo "export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\"" >> ~/.bashrc
+            
+            # 再次检查
+            if ! command -v naptha &> /dev/null; then
+                echo -e "${YELLOW}尝试使用绝对路径...${RESET}"
+                alias naptha="$INSTALL_DIR/.venv/bin/naptha"
+            fi
+        else
+            echo -e "${RED}未找到 naptha 命令，尝试重新安装...${RESET}"
+            if command -v uv &> /dev/null; then
+                uv pip install naptha-sdk --force-reinstall
+            else
+                pip install naptha-sdk --force-reinstall
+            fi
+            
+            # 检查安装后是否可用
+            if [ -f ".venv/bin/naptha" ]; then
+                export PATH="$INSTALL_DIR/.venv/bin:$PATH"
+                echo "export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\"" >> ~/.bashrc
+            else
+                echo -e "${RED}无法安装 naptha 命令，请手动安装${RESET}"
+                return 1
+            fi
+        fi
+    fi
+    
+    echo -e "${GREEN}naptha 命令可用！${RESET}"
+    return 0
+}
+
 # 运行模块
 run_module() {
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    # 确保 naptha 命令可用
+    ensure_naptha_available
+    
     echo -e "${BLUE}运行模块...${RESET}"
     echo -e "1. 运行 Agent"
     echo -e "2. 运行 Tool"
@@ -188,7 +256,12 @@ run_module() {
     
     cd "$INSTALL_DIR"
     source .venv/bin/activate
-    naptha run "$module_cmd:$module_name" -p "$module_params"
+    
+    echo -e "${BLUE}运行 naptha run $module_cmd:$module_name -p \"$module_params\"${RESET}"
+    naptha run "$module_cmd:$module_name" -p "$module_params" || {
+        echo -e "${RED}命令执行失败，尝试使用绝对路径...${RESET}"
+        "$INSTALL_DIR/.venv/bin/naptha" run "$module_cmd:$module_name" -p "$module_params"
+    }
 }
 
 # 管理配置文件
@@ -215,8 +288,42 @@ manage_configs() {
     nano "$INSTALL_DIR/configs/$config_file"
 }
 
+# 检查并安装依赖
+check_dependencies() {
+    echo -e "${BLUE}检查并安装必要的依赖...${RESET}"
+    
+    # 检查git
+    if ! command -v git &> /dev/null; then
+        echo -e "${YELLOW}安装git...${RESET}"
+        sudo apt update
+        sudo apt install -y git
+    fi
+    
+    # 检查curl
+    if ! command -v curl &> /dev/null; then
+        echo -e "${YELLOW}安装curl...${RESET}"
+        sudo apt update
+        sudo apt install -y curl
+    fi
+    
+    # 检查nano
+    if ! command -v nano &> /dev/null; then
+        echo -e "${YELLOW}安装nano...${RESET}"
+        sudo apt update
+        sudo apt install -y nano
+    fi
+    
+    # 检查openssl
+    if ! command -v openssl &> /dev/null; then
+        echo -e "${YELLOW}安装openssl...${RESET}"
+        sudo apt update
+        sudo apt install -y openssl
+    fi
+}
+
 # 安装 NapthaAI 节点
 install_node() {
+    check_dependencies
     install_docker
     install_uv
     echo -e "${BLUE}安装 NapthaAI 节点...${RESET}"
@@ -231,17 +338,53 @@ install_node() {
     python3 -m venv .venv
     source .venv/bin/activate
     
-    # 使用 uv 安装依赖
-    uv pip install --upgrade pip
-    uv pip install docker requests naptha-sdk python-dotenv cryptography
+    # 使用 uv 或 pip 安装依赖
+    if command -v uv &> /dev/null; then
+        echo -e "${BLUE}使用 uv 安装依赖...${RESET}"
+        uv pip install --upgrade pip
+        uv pip install docker requests python-dotenv cryptography
+        echo -e "${BLUE}安装 naptha-sdk...${RESET}"
+        uv pip install naptha-sdk
+    else
+        echo -e "${YELLOW}使用 pip 安装依赖...${RESET}"
+        pip install --upgrade pip
+        pip install docker requests python-dotenv cryptography
+        echo -e "${BLUE}安装 naptha-sdk...${RESET}"
+        pip install naptha-sdk
+    fi
     
-    # 复制 .env 配置文件
-    if [ ! -f ".env" ]; then
-        echo -e "${BLUE}创建 .env 配置文件...${RESET}"
-        cp .env.example .env
-        sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-        sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-        sed -i 's/^youruser=.*/youruser=root/' .env  # 设置为 root 用户
+    # 验证naptha命令是否可用
+    if ! command -v naptha &> /dev/null; then
+        echo -e "${YELLOW}naptha命令不可用，尝试从.venv/bin目录加载...${RESET}"
+        if [ -f ".venv/bin/naptha" ]; then
+            echo -e "${BLUE}找到naptha命令，将其添加到PATH...${RESET}"
+            export PATH="$INSTALL_DIR/.venv/bin:$PATH"
+            # 添加到.bashrc以便下次登录时可用
+            echo "export PATH=\"$INSTALL_DIR/.venv/bin:\$PATH\"" >> ~/.bashrc
+        else
+            echo -e "${RED}无法找到naptha命令，安装可能不完整${RESET}"
+        fi
+    fi
+    
+    # 使用 naptha 命令创建身份，如果用户还没有身份
+    if [ ! -f ".env" ] || ! grep -q "HUB_USERNAME" ".env"; then
+        echo -e "${BLUE}尝试使用 naptha signup 创建身份...${RESET}"
+        if command -v naptha &> /dev/null; then
+            echo -e "${BLUE}请按照提示创建 Naptha 身份${RESET}"
+            naptha signup
+        else
+            echo -e "${YELLOW}naptha 命令不可用，将手动创建身份${RESET}"
+            create_naptha_identity
+        fi
+    else
+        # 复制 .env 配置文件
+        if [ ! -f ".env" ]; then
+            echo -e "${BLUE}创建 .env 配置文件...${RESET}"
+            cp .env.example .env
+            sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
+            sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
+            sed -i 's/^youruser=.*/youruser=root/' .env  # 设置为 root 用户
+        fi
     fi
     
     # 创建必要的目录
@@ -394,6 +537,80 @@ replace_private_key_in_pem() {
     return 0
 }
 
+# 检查并修复配置
+check_and_fix() {
+    echo -e "${BLUE}检查并修复配置问题...${RESET}"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    # 检查 uv 安装
+    if ! command -v uv &> /dev/null; then
+        echo -e "${YELLOW}未找到 uv 命令，尝试重新安装...${RESET}"
+        install_uv
+    fi
+    
+    # 检查 naptha 命令
+    ensure_naptha_available
+    
+    # 检查配置文件
+    cd "$INSTALL_DIR"
+    if [ ! -f ".env" ]; then
+        echo -e "${RED}未找到 .env 文件，尝试创建...${RESET}"
+        if [ -f ".env.example" ]; then
+            cp .env.example .env
+            sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
+            sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
+            sed -i 's/^youruser=.*/youruser=root/' .env
+            echo -e "${GREEN}.env 文件已创建，请使用 '配置环境变量' 选项设置您的凭据${RESET}"
+        else
+            echo -e "${RED}未找到 .env.example 文件，无法创建配置${RESET}"
+        fi
+    fi
+    
+    # 检查配置目录
+    if [ ! -d "configs" ]; then
+        echo -e "${YELLOW}创建 configs 目录...${RESET}"
+        mkdir -p configs
+    fi
+    
+    # 检查默认配置文件
+    if [ ! -f "configs/deployment.json" ]; then
+        echo -e "${YELLOW}创建默认 deployment.json 文件...${RESET}"
+        cat > "configs/deployment.json" << EOF
+{
+    "node": {
+        "name": "node.naptha.ai"
+    },
+    "module": {
+        "name": "multiagent_chat"
+    },
+    "config": {},
+    "agent_deployments": [],
+    "kb_deployments": []
+}
+EOF
+    fi
+    
+    if [ ! -f "configs/agent_deployments.json" ]; then
+        echo -e "${YELLOW}创建默认 agent_deployments.json 文件...${RESET}"
+        cat > "configs/agent_deployments.json" << EOF
+[]
+EOF
+    fi
+    
+    if [ ! -f "configs/kb_deployments.json" ]; then
+        echo -e "${YELLOW}创建默认 kb_deployments.json 文件...${RESET}"
+        cat > "configs/kb_deployments.json" << EOF
+[]
+EOF
+    fi
+    
+    echo -e "${GREEN}配置检查完成！${RESET}"
+}
+
 # 菜单
 while true; do
     echo -e "\n${BLUE}NapthaAI 一键管理脚本 - ${AUTHOR}${RESET}"
@@ -409,6 +626,7 @@ while true; do
     echo -e "10. 停止节点"
     echo -e "11. 重新启动节点"
     echo -e "12. 卸载 NapthaAI"
+    echo -e "13. 检查并修复配置问题"
     echo -e "0. 退出"
     read -p "请选择操作: " choice
 
@@ -435,6 +653,7 @@ while true; do
             ;;
         11) restart_node ;;
         12) uninstall_node ;;
+        13) check_and_fix ;;
         0) echo -e "${BLUE}退出脚本。${RESET}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重新输入！${RESET}" ;;
     esac
