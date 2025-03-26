@@ -1252,6 +1252,10 @@ restart_node() {
         echo -e "${YELLOW}正在重新启动节点...${RESET}"
         cd "$INSTALL_DIR"
         
+        # 先检查并修复PRIVATE_KEY格式问题
+        echo -e "${YELLOW}检查PRIVATE_KEY格式...${RESET}"
+        fix_private_key
+        
         # 检查节点启动方式
         if [ -f ".env" ] && grep -q "LAUNCH_DOCKER" ".env"; then
             launch_docker=$(grep "LAUNCH_DOCKER" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | xargs || echo "true")
@@ -1416,168 +1420,61 @@ ensure_pem_file() {
 
 # 检查和修复配置问题
 check_and_fix() {
-    echo -e "${BLUE}检查并修复配置问题...${RESET}"
+    echo -e "${BLUE}正在检查配置问题...${RESET}"
     
     if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        echo -e "${RED}未找到 NapthaAI 节点安装目录${RESET}"
         return 1
     fi
     
     cd "$INSTALL_DIR"
     
-    # 检查Docker是否安装
-    if ! command -v docker &> /dev/null; then
-        echo -e "${RED}Docker未安装，请先安装Docker！${RESET}"
-        return 1
-    fi
-    
-    # 检查Docker Compose是否安装
-    if ! command -v docker-compose &> /dev/null && ! command -v docker compose &> /dev/null; then
-        echo -e "${RED}Docker Compose未安装，请先安装Docker Compose！${RESET}"
-        return 1
-    fi
-    
-    # 检查是否存在配置文件
+    # 检查.env文件是否存在
     if [ ! -f ".env" ]; then
-        echo -e "${RED}未找到配置文件(.env)，请先创建配置文件！${RESET}"
-        return 1
-    fi
-    
-    # 检查.env文件中的PRIVATE_KEY格式
-    if [ -f ".env" ] && grep -q "PRIVATE_KEY" ".env"; then
-        echo -e "${YELLOW}检查PRIVATE_KEY格式...${RESET}"
-        
-        # 提取PRIVATE_KEY行
-        private_key_line=$(grep "PRIVATE_KEY" ".env")
-        
-        # 检查是否是RSA私钥（包含BEGIN或END）
-        if [[ "$private_key_line" == *"BEGIN"* ]] || [[ "$private_key_line" == *"END"* ]] || [[ "$private_key_line" == *"/"* ]]; then
-            echo -e "${RED}检测到PRIVATE_KEY格式错误，可能是整个RSA私钥${RESET}"
-            echo -e "${YELLOW}正在修复PRIVATE_KEY格式...${RESET}"
-            
-            # 备份原有.env文件
-            cp ".env" ".env.bak-$(date +%Y%m%d%H%M%S)"
-            
-            # 提取所有非PRIVATE_KEY的行
-            grep -v "PRIVATE_KEY" ".env" > ".env.temp"
-            
-            # 生成新的PRIVATE_KEY
-            PRIVATE_KEY=$(openssl rand -hex 32)
-            echo "PRIVATE_KEY=\"$PRIVATE_KEY\"" >> ".env.temp"
-            
-            # 替换原文件
-            mv ".env.temp" ".env"
-            
-            echo -e "${GREEN}已成功修复PRIVATE_KEY格式！${RESET}"
-            
-            # 询问是否更新naptha-sdk配置
-            if [ -f "$HOME/.naptha/config.json" ] && grep -q "HUB_USERNAME" ".env"; then
-                read -p "是否同时更新naptha-sdk配置的身份密钥? (y/n): " update_sdk_pk
-                if [[ "$update_sdk_pk" == "y" ]]; then
-                    username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-                    
-                    # 更新config.json中的私钥
-                    if command -v jq &> /dev/null; then
-                        # 使用jq更新
-                        jq --arg username "$username" --arg pk "$PRIVATE_KEY" '.identities[$username] = $pk' "$HOME/.naptha/config.json" > "$HOME/.naptha/config.json.tmp"
-                        mv "$HOME/.naptha/config.json.tmp" "$HOME/.naptha/config.json"
-                    else
-                        # 手动创建新的配置文件
-                        hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs || echo "wss://hub.naptha.ai/rpc")
-                        node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs || echo "http://localhost:7001")
-                        
-                        cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$hub_url",
-    "default_node_url": "$node_url",
-    "identities": {
-        "$username": "$PRIVATE_KEY"
-    }
-}
+        echo -e "${RED}未找到 .env 文件！${RESET}"
+        # 创建.env文件
+        cat > ".env" << EOF
+HUB_URL=http://hub.napthaai.uk
+NODE_URL=http://localhost:8080
 EOF
-                    fi
-                    
-                    echo -e "${GREEN}已更新naptha-sdk配置中的私钥${RESET}"
-                fi
-            fi
-        else
-            echo -e "${GREEN}PRIVATE_KEY格式正确${RESET}"
-        fi
+        echo -e "${GREEN}已创建基本的 .env 文件${RESET}"
     fi
     
-    # 检查PostgreSQL配置
-    if grep -q "PG_PORT" ".env"; then
-        pg_port=$(grep "PG_PORT" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-        echo -e "${YELLOW}PostgreSQL端口: $pg_port${RESET}"
+    # 检查HUB_USERNAME是否存在
+    if ! grep -q "HUB_USERNAME" ".env"; then
+        read -p "请输入你的Hub用户名: " hub_username
+        echo "HUB_USERNAME=$hub_username" >> ".env"
+        echo -e "${GREEN}已添加HUB_USERNAME到 .env 文件${RESET}"
+    else
+        hub_username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+    fi
+    
+    # 检查PRIVATE_KEY是否存在和格式
+    if ! grep -q "PRIVATE_KEY" ".env"; then
+        echo -e "${YELLOW}未找到PRIVATE_KEY，尝试创建...${RESET}"
+        # 生成私钥并添加到.env
+        new_private_key=$(openssl rand -hex 32)
+        echo "PRIVATE_KEY=$new_private_key" >> ".env"
+        echo -e "${GREEN}已添加PRIVATE_KEY到 .env 文件${RESET}"
         
-        # 检查是否有端口冲突
-        if lsof -i:"$pg_port" &> /dev/null; then
-            echo -e "${RED}端口 $pg_port 已被占用，需要修改PostgreSQL端口！${RESET}"
-            read -p "请输入新的PostgreSQL端口号: " new_pg_port
-            sed -i "s/PG_PORT=.*/PG_PORT=$new_pg_port/" ".env"
-            echo -e "${GREEN}已更新PostgreSQL端口为 $new_pg_port${RESET}"
-        else
-            echo -e "${GREEN}PostgreSQL端口未被占用${RESET}"
-        fi
+        # 更新naptha-sdk配置
+        update_sdk_config "$new_private_key" "$hub_username"
+    else
+        # 调用fix_private_key函数修复PRIVATE_KEY格式
+        echo -e "${YELLOW}检查PRIVATE_KEY格式...${RESET}"
+        fix_private_key
     fi
     
-    # 检查提示PEM文件和user.py问题
-    if [ -f "docker-compose.yml" ]; then
-        # 检查用户名
-        if grep -q "HUB_USERNAME" ".env"; then
-            username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-        else
-            username="default"
-        fi
-        
-        # 检查PEM文件是否在Docker卷中正确配置
-        pem_docker_path=$(grep -o "- .*:.*\.pem" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
-        if [ -n "$pem_docker_path" ]; then
-            if [ ! -f "$pem_docker_path" ]; then
-                echo -e "${YELLOW}检测到Docker卷PEM文件路径未正确配置: $pem_docker_path${RESET}"
-                # 复制PEM文件到Docker卷路径
-                if [ -f "$INSTALL_DIR/${username}.pem" ]; then
-                    mkdir -p "$(dirname "$pem_docker_path")"
-                    cp "$INSTALL_DIR/${username}.pem" "$pem_docker_path"
-                    echo -e "${GREEN}已复制PEM文件到Docker卷路径${RESET}"
-                else
-                    echo -e "${RED}未找到PEM文件，请先创建PEM文件${RESET}"
-                fi
-            else
-                echo -e "${GREEN}Docker卷PEM文件已正确配置${RESET}"
-            fi
-        fi
-        
-        # 检查user.py文件状态
-        mount_path=$(grep -o "- .*:/app" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
-        if [ -n "$mount_path" ] && [ -d "$mount_path" ] && [ -f "$mount_path/node/user.py" ]; then
-            # 检查user.py文件是否包含我们的修复补丁
-            if grep -q "fallback_to_file" "$mount_path/node/user.py"; then
-                echo -e "${GREEN}user.py文件已包含修复补丁${RESET}"
-            else
-                echo -e "${YELLOW}检测到user.py文件未修复，可能无法正确处理私钥${RESET}"
-                read -p "是否要修复user.py文件? (y/n): " fix_userpy
-                if [[ "$fix_userpy" == "y" ]]; then
-                    fix_user_py
-                else
-                    echo -e "${YELLOW}您可以稍后通过选择菜单选项16来修复user.py${RESET}"
-                fi
-            fi
-        fi
+    # 检查PEM文件是否存在
+    pem_file_path="$HOME/.naptha/$hub_username.pem"
+    if [ ! -f "$pem_file_path" ]; then
+        ensure_pem_file
     fi
     
-    # 询问是否重启节点
-    if docker ps | grep -q "naptha"; then
-        read -p "是否需要重启节点以应用更改? (y/n): " restart_node
-        if [[ "$restart_node" == "y" ]]; then
-            echo -e "${YELLOW}正在重启节点...${RESET}"
-            docker-compose down
-            start_node
-            echo -e "${GREEN}节点已重新启动！${RESET}"
-        fi
-    fi
+    # 检查user.py文件问题
+    fix_user_py
     
-    return 0
+    echo -e "${GREEN}配置检查和修复完成${RESET}"
 }
 
 # 修复user.py和私钥处理相关问题
@@ -1755,160 +1652,134 @@ fi
 
 # 修复PRIVATE_KEY格式问题
 fix_private_key() {
-    echo -e "${BLUE}修复PRIVATE_KEY格式问题...${RESET}"
+    local env_file=".env"
+    local backup_file=".env.bak.$(date +%Y%m%d%H%M%S)"
     
-    if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+    echo -e "${YELLOW}正在检查PRIVATE_KEY格式...${RESET}"
+    
+    # 检查.env文件是否存在
+    if [ ! -f "$env_file" ]; then
+        echo -e "${RED}.env文件不存在，无法修复PRIVATE_KEY！${RESET}"
         return 1
     fi
     
-    cd "$INSTALL_DIR"
+    # 提取私钥
+    local private_key_value=$(grep "^PRIVATE_KEY=" "$env_file" | cut -d'=' -f2- | tr -d '"' | tr -d "'")
     
-    if [ ! -f ".env" ]; then
-        echo -e "${RED}未找到 .env 文件！${RESET}"
+    # 检查是否为空
+    if [ -z "$private_key_value" ]; then
+        echo -e "${RED}PRIVATE_KEY未在.env文件中找到或为空！${RESET}"
         return 1
     fi
     
-    # 检查PRIVATE_KEY格式
-    if grep -q "PRIVATE_KEY" ".env"; then
-        # 提取PRIVATE_KEY行
-        private_key_line=$(grep "PRIVATE_KEY" ".env")
-        
-        # 检查是否是RSA私钥（包含BEGIN或END）或是文件路径
-        if [[ "$private_key_line" == *"BEGIN"* ]] || [[ "$private_key_line" == *"END"* ]] || [[ "$private_key_line" == *"/"* ]]; then
-            echo -e "${RED}检测到PRIVATE_KEY格式错误，可能是整个RSA私钥或文件路径${RESET}"
-            
-            # 备份原有.env文件
-            cp ".env" ".env.bak-$(date +%Y%m%d%H%M%S)"
-            echo -e "${GREEN}已备份原有 .env 文件${RESET}"
-            
-            # 检查用户名，用于生成PEM文件
-            if grep -q "HUB_USERNAME" ".env"; then
-                username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-            else
-                # 如果没有找到用户名，提示输入
-                read -p "未找到用户名配置，请输入用户名: " username
-                echo "HUB_USERNAME=$username" >> ".env"
-            fi
-            
-            # 确保PEM文件存在
-            PEM_FILE="${username}.pem"
-            if [ ! -f "$PEM_FILE" ]; then
-                echo -e "${YELLOW}创建新的PEM文件: $PEM_FILE${RESET}"
-                openssl genrsa -out "$PEM_FILE" 2048 || {
-                    echo -e "${RED}使用openssl生成私钥失败，尝试使用ssh-keygen...${RESET}"
-                    ssh-keygen -t rsa -b 2048 -f "$PEM_FILE" -N ""
-                }
-            else
-                echo -e "${GREEN}已找到PEM文件: $PEM_FILE${RESET}"
-            fi
-            
-            # 移除原有的PRIVATE_KEY行
-            grep -v "PRIVATE_KEY" ".env" > ".env.temp"
-            
-            # 生成新的16进制PRIVATE_KEY
-            NEW_PRIVATE_KEY=$(openssl rand -hex 32)
-            echo "PRIVATE_KEY=\"$NEW_PRIVATE_KEY\"" >> ".env.temp"
-            
-            # 替换原文件
-            mv ".env.temp" ".env"
-            
-            echo -e "${GREEN}已成功修复PRIVATE_KEY格式！${RESET}"
-            
-            # 更新naptha-sdk配置
-            if [ -d "$HOME/.naptha" ]; then
-                echo -e "${YELLOW}更新naptha-sdk配置...${RESET}"
-                
-                # 获取HUB_URL和NODE_URL
-                if grep -q "HUB_URL" ".env"; then
-                    hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-                else
-                    hub_url="wss://hub.naptha.ai/rpc"
-                fi
-                
-                if grep -q "NODE_URL" ".env"; then
-                    node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-                else
-                    node_url="http://localhost:7001"
-                fi
-                
-                # 创建或更新配置
-                mkdir -p "$HOME/.naptha"
-                cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$hub_url",
-    "default_node_url": "$node_url",
-    "identities": {
-        "$username": "$NEW_PRIVATE_KEY"
-    }
-}
-EOF
-                echo -e "${GREEN}已更新naptha-sdk配置${RESET}"
-            fi
-        else
-            echo -e "${GREEN}PRIVATE_KEY格式正确，无需修复${RESET}"
-        fi
+    # 检查是否为PEM格式（包含BEGIN和END标记）
+    if [[ "$private_key_value" == *"BEGIN"* && "$private_key_value" == *"END"* ]] || 
+       [[ "$private_key_value" == *"-----BEGIN"* ]]; then
+        echo -e "${YELLOW}检测到PEM格式的私钥，需要转换为十六进制格式...${RESET}"
+        need_fix=true
+    # 检查是否为有效的十六进制字符串（长度为64且只包含十六进制字符）
+    elif [[ ! "$private_key_value" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        echo -e "${YELLOW}PRIVATE_KEY格式不正确，需要修复...${RESET}"
+        need_fix=true
     else
-        echo -e "${YELLOW}未找到PRIVATE_KEY配置，将创建新的...${RESET}"
+        echo -e "${GREEN}PRIVATE_KEY格式正确，无需修复！${RESET}"
+        return 0
+    fi
+    
+    if [ "$need_fix" = true ]; then
+        # 备份当前.env文件
+        cp "$env_file" "$backup_file"
+        echo -e "${GREEN}已备份原始.env文件到 $backup_file${RESET}"
         
-        # 检查用户名，用于生成PEM文件
-        if grep -q "HUB_USERNAME" ".env"; then
-            username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-        else
-            # 如果没有找到用户名，提示输入
-            read -p "未找到用户名配置，请输入用户名: " username
-            echo "HUB_USERNAME=$username" >> ".env"
+        # 生成新的私钥
+        local new_private_key=$(openssl rand -hex 32)
+        echo -e "${GREEN}已生成新的PRIVATE_KEY${RESET}"
+        
+        # 更新.env文件中的PRIVATE_KEY
+        sed -i.tmp "/^PRIVATE_KEY=/d" "$env_file" && rm -f "$env_file.tmp"
+        echo "PRIVATE_KEY=$new_private_key" >> "$env_file"
+        echo -e "${GREEN}已更新.env文件中的PRIVATE_KEY${RESET}"
+        
+        # 从.env提取HUB_USERNAME
+        local hub_username=$(grep "^HUB_USERNAME=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+        if [ -z "$hub_username" ]; then
+            echo -e "${YELLOW}未找到HUB_USERNAME，请确保配置正确${RESET}"
+            hub_username="default_user"
         fi
-        
-        # 确保PEM文件存在
-        PEM_FILE="${username}.pem"
-        if [ ! -f "$PEM_FILE" ]; then
-            echo -e "${YELLOW}创建新的PEM文件: $PEM_FILE${RESET}"
-            openssl genrsa -out "$PEM_FILE" 2048 || {
-                echo -e "${RED}使用openssl生成私钥失败，尝试使用ssh-keygen...${RESET}"
-                ssh-keygen -t rsa -b 2048 -f "$PEM_FILE" -N ""
-            }
-        fi
-        
-        # 生成新的16进制PRIVATE_KEY
-        NEW_PRIVATE_KEY=$(openssl rand -hex 32)
-        echo "PRIVATE_KEY=\"$NEW_PRIVATE_KEY\"" >> ".env"
-        
-        echo -e "${GREEN}已添加PRIVATE_KEY配置${RESET}"
         
         # 更新naptha-sdk配置
-        if [ -d "$HOME/.naptha" ]; then
-            echo -e "${YELLOW}更新naptha-sdk配置...${RESET}"
-            
-            # 获取HUB_URL和NODE_URL
-            if grep -q "HUB_URL" ".env"; then
-                hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-            else
-                hub_url="wss://hub.naptha.ai/rpc"
-            fi
-            
-            if grep -q "NODE_URL" ".env"; then
-                node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
-            else
-                node_url="http://localhost:7001"
-            fi
-            
-            # 创建或更新配置
-            mkdir -p "$HOME/.naptha"
-            cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$hub_url",
-    "default_node_url": "$node_url",
-    "identities": {
-        "$username": "$NEW_PRIVATE_KEY"
-    }
-}
-EOF
-            echo -e "${GREEN}已更新naptha-sdk配置${RESET}"
+        update_sdk_config "$new_private_key" "$hub_username"
+        
+        # 将新的私钥保存为PEM文件
+        local pem_dir="$HOME/.naptha"
+        local pem_file="$pem_dir/$hub_username.pem"
+        
+        # 确保目录存在
+        mkdir -p "$pem_dir"
+        
+        # 将十六进制私钥转换为PEM格式
+        echo -e "${YELLOW}正在保存私钥到PEM文件: $pem_file ${RESET}"
+        printf "%s" "$new_private_key" | xxd -r -p | openssl pkcs8 -topk8 -inform DER -nocrypt -outform PEM > "$pem_file" 2>/dev/null
+        
+        if [ $? -eq 0 ] && [ -f "$pem_file" ]; then
+            echo -e "${GREEN}已成功保存私钥到PEM文件${RESET}"
+            chmod 600 "$pem_file"
+        else
+            echo -e "${RED}保存PEM文件失败，尝试使用替代方法${RESET}"
+            # 替代方法：直接使用openssl生成PEM文件
+            openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$pem_file"
+            chmod 600 "$pem_file"
+            echo -e "${YELLOW}已生成新的RSA私钥并保存到PEM文件${RESET}"
         fi
+        
+        echo -e "${GREEN}PRIVATE_KEY修复完成！${RESET}"
+    fi
+}
+
+# 更新naptha-sdk配置的辅助函数
+update_sdk_config() {
+    local private_key="$1"
+    local username="$2"
+    
+    # 检查是否有必要的参数
+    if [ -z "$private_key" ] || [ -z "$username" ]; then
+        echo -e "${RED}更新SDK配置失败：缺少私钥或用户名参数${RESET}"
+        return 1
     fi
     
-    return 0
+    # 确保SDK配置目录存在
+    local sdk_config_dir="$HOME/.naptha"
+    mkdir -p "$sdk_config_dir"
+    
+    # 从.env提取HUB_URL和NODE_URL
+    local env_file=".env"
+    local hub_url=$(grep "^HUB_URL=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+    local node_url=$(grep "^NODE_URL=" "$env_file" | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+    
+    # 如果未找到HUB_URL，使用默认值
+    if [ -z "$hub_url" ]; then
+        hub_url="http://hub.napthaai.uk"
+    fi
+    
+    # 如果未找到NODE_URL，使用默认值
+    if [ -z "$node_url" ]; then
+        node_url="http://localhost:8080"
+    fi
+    
+    # 创建或更新SDK配置文件
+    local sdk_config_file="$sdk_config_dir/config.json"
+    cat > "$sdk_config_file" << EOF
+{
+    "hub_url": "$hub_url",
+    "node_url": "$node_url",
+    "username": "$username",
+    "private_key": "$private_key"
+}
+EOF
+    
+    # 设置适当的权限
+    chmod 600 "$sdk_config_file"
+    echo -e "${GREEN}已更新naptha-sdk配置文件${RESET}"
 }
 
 # 加载环境变量文件
@@ -2502,7 +2373,21 @@ main_menu() {
             12) replace_private_key_in_pem ;;
             13) ensure_pem_file ;;
             14) check_and_fix ;;
-            15) fix_private_key ;;
+            15) 
+                if [ -d "$INSTALL_DIR" ]; then
+                    cd "$INSTALL_DIR"
+                    fix_private_key
+                    echo -e "${YELLOW}PRIVATE_KEY已更新，是否需要重启节点以应用更改? (y/n): ${RESET}"
+                    read -p "" restart_now
+                    if [[ "$restart_now" == "y" ]]; then
+                        restart_node
+                    else
+                        echo -e "${YELLOW}请记得稍后重启节点以应用更改${RESET}"
+                    fi
+                else
+                    echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+                fi
+                ;;
             16) fix_user_py ;;
             17) uninstall_node ;;
             0) 
