@@ -12,6 +12,19 @@ RESET='\e[0m'
 # NapthaAI 目录
 INSTALL_DIR="/root/Naptha-Node"
 
+# 检查是否是一键安装命令
+if [ "$1" = "--auto-install" ]; then
+    echo -e "${BLUE}开始自动安装 NapthaAI 节点...${RESET}"
+    install_docker
+    install_node
+    echo -e "${GREEN}安装完成！${RESET}"
+    echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    echo -e "RabbitMQ 管理界面: ${YELLOW}http://$(hostname -I | awk '{print $1}'):15672${RESET}"
+    echo -e "用户名: ${YELLOW}username${RESET}"
+    echo -e "密码: ${YELLOW}password${RESET}"
+    exit 0
+fi
+
 # 炫酷的 @fishzone24 字符标识
 cat << "EOF"
 
@@ -102,28 +115,122 @@ install_node() {
     install_docker
     echo -e "${BLUE}安装 NapthaAI 节点...${RESET}"
     if [ ! -d "$INSTALL_DIR" ]; then
-        git clone https://github.com/NapthaAI/naptha-node.git "$INSTALL_DIR"
+        git clone https://github.com/NapthaAI/node.git "$INSTALL_DIR"
     fi
     cd "$INSTALL_DIR"
 
-    # 创建虚拟环境并安装依赖
-    create_virtualenv
+    # 创建必要的目录
+    mkdir -p data/surreal data/rabbitmq data/postgres
 
-    # 复制 .env 配置文件
-    if [ ! -f ".env" ]; then
-        echo -e "${BLUE}创建 .env 配置文件...${RESET}"
-        cp .env.example .env
-        sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-        sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-        sed -i 's/^youruser=.*/youruser=root/' .env  # 设置为 root 用户
-    fi
+    # 创建 .env 配置文件
+    echo -e "${BLUE}创建 .env 配置文件...${RESET}"
+    cat > .env << 'EOL'
+# 基本配置
+LAUNCH_DOCKER=true
+LLM_BACKEND=ollama
+OLLAMA_MODELS=hermes3:8b
+
+# Hub 配置
+LOCAL_HUB=true
+REGISTER_NODE_WITH_HUB=true
+
+# SurrealDB 配置
+HUB_DB_SURREAL_ROOT_USER=root
+HUB_DB_SURREAL_ROOT_PASS=root
+HUB_DB_SURREAL_PORT=3001
+HUB_DB_SURREAL_NS="naptha"
+HUB_DB_SURREAL_NAME="naptha"
+HUB_DB_SURREAL_HOST=surreal
+
+# RabbitMQ 配置
+RMQ_HOST=rabbitmq
+RMQ_USER=username
+RMQ_PASS=password
+
+# 节点配置
+NODE_IP=0.0.0.0
+NODE_COMMUNICATION_PORT=7001
+EOL
+
+    # 创建 docker-compose.yml
+    echo -e "${BLUE}创建 docker-compose.yml 配置文件...${RESET}"
+    cat > docker-compose.yml << 'EOL'
+version: '3.8'
+
+services:
+  node-app:
+    image: napthaai/node:latest
+    container_name: node-app
+    ports:
+      - "7001:7001"
+    environment:
+      - NODE_IP=0.0.0.0
+      - NODE_COMMUNICATION_PORT=7001
+    volumes:
+      - .:/app
+    depends_on:
+      - rabbitmq
+      - surreal
+      - pgvector
+    networks:
+      - naptha-network
+
+  surreal:
+    image: surrealdb/surrealdb:latest
+    container_name: surreal
+    ports:
+      - "3001:3001"
+    environment:
+      - SURREAL_USER=root
+      - SURREAL_PASS=root
+    volumes:
+      - ./data/surreal:/data
+    networks:
+      - naptha-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=username
+      - RABBITMQ_DEFAULT_PASS=password
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    networks:
+      - naptha-network
+
+  pgvector:
+    image: ankane/pgvector:latest
+    container_name: pgvector
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=litellm
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - naptha-network
+
+networks:
+  naptha-network:
+    driver: bridge
+EOL
     
     # 启动 NapthaAI 节点
     echo -e "${BLUE}启动 NapthaAI 节点...${RESET}"
-    bash launch.sh
+    docker-compose down
+    docker-compose up -d
 
     echo -e "${GREEN}NapthaAI 节点已成功启动！${RESET}"
     echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    echo -e "RabbitMQ 管理界面: ${YELLOW}http://$(hostname -I | awk '{print $1}'):15672${RESET}"
+    echo -e "用户名: ${YELLOW}username${RESET}"
+    echo -e "密码: ${YELLOW}password${RESET}"
 }
 
 # 导出 PRIVATE_KEY
@@ -188,7 +295,8 @@ restart_node() {
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}正在重新启动节点...${RESET}"
         cd "$INSTALL_DIR"
-        bash launch.sh
+        docker-compose down
+        docker-compose up -d
         echo -e "${GREEN}节点已重新启动！${RESET}"
     else
         echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
@@ -199,10 +307,11 @@ restart_node() {
 uninstall_node() {
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}正在停止并删除 NapthaAI 节点的容器和所有文件...${RESET}"
-        stop_and_remove_containers
+        cd "$INSTALL_DIR"
+        docker-compose down --volumes
         cd ~
         rm -rf "$INSTALL_DIR"
-        echo -e "${GREEN}NapthaAI 节点已成功卸载，所有容器已删除！${RESET}"
+        echo -e "${GREEN}NapthaAI 节点已成功卸载，所有容器和数据已删除！${RESET}"
     else
         echo -e "${RED}未找到 NapthaAI 节点，无需卸载。${RESET}"
     fi
@@ -218,6 +327,7 @@ while true; do
     echo -e "5. 更换 PEM 文件中的私钥并重新启动节点"
     echo -e "6. 停止节点运行 (不删除容器)"
     echo -e "7. 重新启动节点"
+    echo -e "8. 查看服务状态"
     echo -e "0. 退出"
     read -p "请选择操作: " choice
 
@@ -227,23 +337,20 @@ while true; do
         3) view_logs ;;
         4) uninstall_node ;;
         5) 
-            # 更换 PEM 文件中的私钥并重新启动节点
             if replace_private_key_in_pem; then
-                stop_containers
-                cd "$INSTALL_DIR"
-                bash launch.sh
-                echo -e "${GREEN}密钥已更换并重新启动节点！${RESET}"
+                restart_node
             fi
             ;;
-        6) 
-            # 停止节点运行 (不删除容器)
-            echo -e "${YELLOW}正在停止节点运行...${RESET}"
-            stop_containers
-            echo -e "${GREEN}节点已停止运行！${RESET}"
-            ;;
-        7) 
-            # 重新启动节点
-            restart_node
+        6) stop_containers ;;
+        7) restart_node ;;
+        8)
+            if [ -d "$INSTALL_DIR" ]; then
+                echo -e "${BLUE}显示服务状态...${RESET}"
+                cd "$INSTALL_DIR"
+                docker-compose ps
+            else
+                echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+            fi
             ;;
         0) echo -e "${BLUE}退出脚本。${RESET}"; exit 0 ;;
         *) echo -e "${RED}无效选项，请重新输入！${RESET}" ;;
