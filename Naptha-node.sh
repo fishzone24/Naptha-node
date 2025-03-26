@@ -50,9 +50,9 @@ check_python_venv() {
         # 根据分发版本使用不同的命令
         if [[ "$NAME" == *"Ubuntu"* ]]; then
             # 检查 python3-venv 是否已安装
-            if ! dpkg -l | grep -q "python3-venv"; then
+    if ! dpkg -l | grep -q "python3-venv"; then
                 echo -e "${YELLOW}安装 python3-venv...${RESET}"
-                sudo apt update
+        sudo apt update
                 
                 # 根据Ubuntu版本和Python版本决定如何安装
                 if [[ "$VERSION_ID" == "24.04" ]] || [[ "$VERSION_ID" == "noble" ]]; then
@@ -520,7 +520,7 @@ EOF
                 3) new_llm="anthropic" ;;
                 4) new_llm="local" ;;
                 5) 
-                    read -p "输入自定义LLM后端: " new_llm
+                    read -p "请输入自定义LLM后端: " new_llm
                     ;;
                 *) 
                     echo -e "${YELLOW}无效选择，不作更改${RESET}"
@@ -1110,7 +1110,7 @@ EOF
     
     # 尝试启动节点
     bash launch.sh
-    
+
     # 等待PostgreSQL初始化
     echo -e "${YELLOW}等待PostgreSQL初始化...${RESET}"
     max_retries=5
@@ -1139,11 +1139,11 @@ EOF
 
     # 检查是否成功启动
     if docker ps | grep -q "naptha-postgres" && docker ps | grep -q "naptha"; then
-        echo -e "${GREEN}NapthaAI 节点已成功启动！${RESET}"
+    echo -e "${GREEN}NapthaAI 节点已成功启动！${RESET}"
         echo -e "${GREEN}用户名: $username${RESET}"
         echo -e "${GREEN}Hub URL: $hub_url${RESET}"
         echo -e "${GREEN}Node URL: $node_url${RESET}"
-        echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
     else
         echo -e "${RED}启动失败！可能是数据库初始化出现问题${RESET}"
         echo -e "${YELLOW}您可以尝试:${RESET}"
@@ -1251,7 +1251,73 @@ restart_node() {
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}正在重新启动节点...${RESET}"
         cd "$INSTALL_DIR"
-        bash launch.sh
+        
+        # 检查节点启动方式
+        if [ -f ".env" ] && grep -q "LAUNCH_DOCKER" ".env"; then
+            launch_docker=$(grep "LAUNCH_DOCKER" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | xargs || echo "true")
+            
+            if [[ "$launch_docker" == "true" ]]; then
+                # 使用Docker方式重启
+                echo -e "${YELLOW}使用Docker方式重启节点...${RESET}"
+                docker-compose down
+                start_node
+            else
+                # 使用本地服务方式重启
+                echo -e "${YELLOW}使用本地服务方式重启节点...${RESET}"
+                
+                # 根据操作系统停止当前服务
+                case "$(uname -s)" in
+                    Linux*)  
+                        # 检查是否有systemd
+                        if command -v systemctl &> /dev/null && systemctl list-units --type=service | grep -q "nodeapp"; then
+                            echo -e "${YELLOW}停止systemd服务...${RESET}"
+                            sudo systemctl stop nodeapp_http.service
+                            for service in $(systemctl list-units --type=service | grep nodeapp | awk '{print $1}'); do
+                                sudo systemctl stop "$service"
+                            done
+                        else
+                            echo -e "${YELLOW}停止直接启动的服务...${RESET}"
+                            # 查找并停止已启动的服务
+                            if [ -f "http_7001.pid" ]; then
+                                kill -15 $(cat http_7001.pid) 2>/dev/null || true
+                            fi
+                            
+                            for pidfile in $(find . -name "*.pid"); do
+                                kill -15 $(cat "$pidfile") 2>/dev/null || true
+                                rm -f "$pidfile"
+                            done
+                        fi
+                        ;;
+                    Darwin*)  
+                        echo -e "${YELLOW}停止launchd服务...${RESET}"
+                        for plist in $(find ~/Library/LaunchAgents -name 'com.naptha.nodeapp.*.plist'); do
+                            launchctl unload "$plist" 2>/dev/null || true
+                        done
+                        ;;
+                    *)
+                        echo -e "${YELLOW}未识别的操作系统，尝试停止直接启动的服务...${RESET}"
+                        if [ -f "http_7001.pid" ]; then
+                            kill -15 $(cat http_7001.pid) 2>/dev/null || true
+                        fi
+                        
+                        for pidfile in $(find . -name "*.pid"); do
+                            kill -15 $(cat "$pidfile") 2>/dev/null || true
+                            rm -f "$pidfile"
+                        done
+                        ;;
+                esac
+                
+                # 重新启动服务
+                sleep 2
+                start_node
+            fi
+        else
+            # 默认使用Docker方式重启
+            echo -e "${YELLOW}未找到配置，使用默认Docker方式重启节点...${RESET}"
+            docker-compose down 2>/dev/null || true
+            start_node
+        fi
+        
         echo -e "${GREEN}节点已重新启动！${RESET}"
     else
         echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
@@ -1348,7 +1414,7 @@ ensure_pem_file() {
     return 0
 }
 
-# 检查并修复配置
+# 检查和修复配置问题
 check_and_fix() {
     echo -e "${BLUE}检查并修复配置问题...${RESET}"
     
@@ -1357,567 +1423,24 @@ check_and_fix() {
         return 1
     fi
     
-    # 检查 uv 安装
-    if ! command -v uv &> /dev/null; then
-        echo -e "${YELLOW}未找到 uv 命令，尝试重新安装...${RESET}"
-        install_uv
+    cd "$INSTALL_DIR"
+    
+    # 检查Docker是否安装
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Docker未安装，请先安装Docker！${RESET}"
+        return 1
     fi
     
-    # 检查 naptha 命令
-    ensure_naptha_available
+    # 检查Docker Compose是否安装
+    if ! command -v docker-compose &> /dev/null && ! command -v docker compose &> /dev/null; then
+        echo -e "${RED}Docker Compose未安装，请先安装Docker Compose！${RESET}"
+        return 1
+    fi
     
-    # 确保PEM文件正确
-    ensure_pem_file
-    
-    # 检查配置文件
-    cd "$INSTALL_DIR"
+    # 检查是否存在配置文件
     if [ ! -f ".env" ]; then
-        echo -e "${RED}未找到 .env 文件，尝试创建...${RESET}"
-        if [ -f ".env.example" ]; then
-            cp .env.example .env
-            sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-            sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-            sed -i 's/^youruser=.*/youruser=root/' .env
-            echo -e "${GREEN}.env 文件已创建，请使用 '配置环境变量' 选项设置您的凭据${RESET}"
-        else
-            echo -e "${RED}未找到 .env.example 文件，无法创建配置${RESET}"
-        fi
-    fi
-    
-    # 检查并添加 HUB_URL 和 NODE_URL
-    if [ -f ".env" ]; then
-        echo -e "${YELLOW}检查 Hub 和 Node URL 配置...${RESET}"
-        HUB_URL_CONFIGURED=false
-        NODE_URL_CONFIGURED=false
-        
-        # 检查 HUB_URL
-        if grep -q "HUB_URL" ".env"; then
-            HUB_URL_CONFIGURED=true
-            echo -e "${GREEN}HUB_URL 已配置${RESET}"
-        else
-            echo -e "${YELLOW}未找到 HUB_URL 配置，将使用官方地址...${RESET}"
-            echo "HUB_URL=wss://hub.naptha.ai/rpc" >> ".env"
-            echo -e "${GREEN}已添加 HUB_URL=wss://hub.naptha.ai/rpc${RESET}"
-        fi
-        
-        # 检查 NODE_URL
-        if grep -q "NODE_URL" ".env"; then
-            NODE_URL_CONFIGURED=true
-            echo -e "${GREEN}NODE_URL 已配置${RESET}"
-        else
-            echo -e "${YELLOW}未找到 NODE_URL 配置，将使用本地地址...${RESET}"
-            echo "NODE_URL=http://localhost:7001" >> ".env"
-            echo -e "${GREEN}已添加 NODE_URL=http://localhost:7001${RESET}"
-        fi
-        
-        # 检查PostgreSQL端口配置
-        if ! grep -q "PG_PORT" ".env"; then
-            echo -e "${YELLOW}未找到 PG_PORT 配置，将使用默认端口5432...${RESET}"
-            echo "PG_PORT=5432" >> ".env"
-            echo -e "${GREEN}已添加 PG_PORT=5432${RESET}"
-        fi
-        
-        # 检查数据库连接问题
-        if docker ps | grep -q "naptha-postgres"; then
-            echo -e "${YELLOW}检查PostgreSQL连接...${RESET}"
-            if ! docker exec naptha-postgres pg_isready -U naptha -d naptha 2>/dev/null; then
-                echo -e "${RED}PostgreSQL连接失败，可能端口冲突${RESET}"
-                
-                current_port=$(grep "PG_PORT" ".env" | cut -d= -f2)
-                echo -e "${YELLOW}当前PostgreSQL端口: $current_port${RESET}"
-                echo -e "${YELLOW}尝试设置新端口...${RESET}"
-                
-                read -p "请输入新的PostgreSQL端口 (默认5433): " new_port
-                new_port=${new_port:-5433}
-                
-                # 更新端口配置
-                sed -i "s/^PG_PORT=.*/PG_PORT=$new_port/" ".env"
-                echo -e "${GREEN}已更新PostgreSQL端口为 $new_port${RESET}"
-                
-                # 停止并重启容器
-                echo -e "${YELLOW}正在重启容器以应用新端口...${RESET}"
-                docker-compose down
-                bash launch.sh
-                
-                # 等待PostgreSQL初始化
-                echo -e "${YELLOW}等待PostgreSQL初始化...${RESET}"
-                sleep 10
-                
-                if docker ps | grep -q "naptha-postgres" && docker exec naptha-postgres pg_isready -U naptha -d naptha 2>/dev/null; then
-                    echo -e "${GREEN}PostgreSQL连接成功！${RESET}"
-                else
-                    echo -e "${RED}PostgreSQL仍然无法连接${RESET}"
-                    echo -e "${YELLOW}请检查日志:${RESET}"
-                    docker logs naptha-postgres 2>&1 | tail -n 20
-                fi
-            else
-                echo -e "${GREEN}PostgreSQL连接正常！${RESET}"
-            fi
-        fi
-        
-        # 询问是否需要修改配置
-        read -p "是否需要修改配置? (y/n): " change_config
-        if [[ "$change_config" == "y" ]]; then
-            show_env
-        fi
-    fi
-    
-    # 检查配置目录
-    if [ ! -d "configs" ]; then
-        echo -e "${YELLOW}创建 configs 目录...${RESET}"
-        mkdir -p configs
-    fi
-    
-    # 检查默认配置文件
-    if [ ! -f "configs/deployment.json" ]; then
-        echo -e "${YELLOW}创建默认 deployment.json 文件...${RESET}"
-        cat > "configs/deployment.json" << EOF
-{
-    "node": {
-        "name": "node.naptha.ai"
-    },
-    "module": {
-        "name": "multiagent_chat"
-    },
-    "config": {},
-    "agent_deployments": [],
-    "kb_deployments": []
-}
-EOF
-    fi
-    
-    if [ ! -f "configs/agent_deployments.json" ]; then
-        echo -e "${YELLOW}创建默认 agent_deployments.json 文件...${RESET}"
-        cat > "configs/agent_deployments.json" << EOF
-[]
-EOF
-    fi
-    
-    if [ ! -f "configs/kb_deployments.json" ]; then
-        echo -e "${YELLOW}创建默认 kb_deployments.json 文件...${RESET}"
-        cat > "configs/kb_deployments.json" << EOF
-[]
-EOF
-    fi
-    
-    # 检查naptha-sdk配置
-    echo -e "${YELLOW}检查 naptha-sdk 配置...${RESET}"
-    if [ -d "$HOME/.naptha" ]; then
-        if [ -f "$HOME/.naptha/config.json" ]; then
-            echo -e "${GREEN}naptha-sdk 配置文件已存在${RESET}"
-            # 显示当前配置的Hub URL
-            if command -v jq &> /dev/null; then
-                CURRENT_HUB=$(jq -r '.hub_url' "$HOME/.naptha/config.json" 2>/dev/null || echo "无法读取")
-                echo -e "${YELLOW}当前配置的Hub URL: $CURRENT_HUB${RESET}"
-            else
-                echo -e "${YELLOW}安装jq以便查看当前配置...${RESET}"
-                sudo apt update && sudo apt install -y jq
-            fi
-            
-            # 询问是否更新naptha-sdk配置
-            read -p "是否需要更新naptha-sdk配置? (y/n): " update_naptha_config
-            if [[ "$update_naptha_config" == "y" ]]; then
-                if [ -f ".env" ] && grep -q "HUB_URL" ".env"; then
-                    ENV_HUB_URL=$(grep "HUB_URL" ".env" | cut -d= -f2)
-                    echo -e "${YELLOW}将naptha-sdk配置更新为: $ENV_HUB_URL${RESET}"
-                    
-                    # 备份现有配置
-                    cp "$HOME/.naptha/config.json" "$HOME/.naptha/config.json.bak"
-                    
-                    # 使用新的HUB_URL更新配置
-                    if command -v jq &> /dev/null; then
-                        jq --arg url "$ENV_HUB_URL" '.hub_url = $url' "$HOME/.naptha/config.json.bak" > "$HOME/.naptha/config.json"
-                    else
-                        # 简单的文本替换
-                        sed -i "s|\"hub_url\":.*|\"hub_url\": \"$ENV_HUB_URL\",|" "$HOME/.naptha/config.json"
-                    fi
-                    
-                    echo -e "${GREEN}naptha-sdk 配置已更新${RESET}"
-                else
-                    echo -e "${RED}未找到 HUB_URL 配置，无法更新naptha-sdk配置${RESET}"
-                fi
-            fi
-        else
-            echo -e "${YELLOW}未找到naptha-sdk配置文件，将创建...${RESET}"
-            mkdir -p "$HOME/.naptha"
-            
-            # 获取 HUB_URL
-            if [ -f ".env" ] && grep -q "HUB_URL" ".env"; then
-                ENV_HUB_URL=$(grep "HUB_URL" ".env" | cut -d= -f2)
-            else
-                ENV_HUB_URL="wss://hub.naptha.ai/rpc"
-            fi
-            
-            # 创建配置文件
-            cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$ENV_HUB_URL",
-    "default_node_url": "http://localhost:7001"
-}
-EOF
-            echo -e "${GREEN}naptha-sdk 配置已创建${RESET}"
-        fi
-    else
-        echo -e "${YELLOW}创建 naptha-sdk 配置目录...${RESET}"
-        mkdir -p "$HOME/.naptha"
-        
-        # 获取 HUB_URL
-        if [ -f ".env" ] && grep -q "HUB_URL" ".env"; then
-            ENV_HUB_URL=$(grep "HUB_URL" ".env" | cut -d= -f2)
-        else
-            ENV_HUB_URL="wss://hub.naptha.ai/rpc"
-        fi
-        
-        # 创建配置文件
-        cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$ENV_HUB_URL",
-    "default_node_url": "http://localhost:7001"
-}
-EOF
-        echo -e "${GREEN}naptha-sdk 配置已创建${RESET}"
-    fi
-    
-    echo -e "${GREEN}配置检查完成！${RESET}"
-}
-
-# 创建Naptha身份
-create_naptha_identity() {
-    echo -e "${BLUE}创建 Naptha 身份...${RESET}"
-    
-    # 确保 naptha 命令可用
-    if ! ensure_naptha_available; then
-        echo -e "${RED}无法确保 naptha 命令可用，将使用手动方式创建身份${RESET}"
-        manual_create_identity
-        return
-    fi
-    
-    echo -e "${YELLOW}您可以选择使用以下方式创建身份:${RESET}"
-    echo -e "1. 使用 naptha signup 命令创建(需要连接到Hub)"
-    echo -e "2. 手动创建(推荐，避免连接问题)"
-    read -p "请选择: " identity_choice
-    
-    case "$identity_choice" in
-        1) 
-            # 使用naptha命令创建
-            echo -e "${BLUE}使用 naptha signup 命令创建身份...${RESET}"
-            read -p "请输入用户名: " username
-            read -s -p "请输入密码: " password
-            echo
-            
-            # 执行naptha signup命令
-            cd "$INSTALL_DIR"
-            SIGNUP_OUTPUT=$($NAPTHA_CMD signup --username "$username" --password "$password" 2>&1)
-            
-            # 检查是否成功
-            if [[ "$SIGNUP_OUTPUT" == *"Signup successful"* ]] || [[ "$SIGNUP_OUTPUT" == *"成功"* ]]; then
-                echo -e "${GREEN}Naptha 身份创建成功！${RESET}"
-                
-                # 创建或更新 .env 文件
-                if [ ! -f ".env" ]; then
-                    cp .env.example .env || echo "HUB_USERNAME=$username" > .env
-                fi
-                
-                # 更新用户名和密码
-                sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$username/" .env
-                sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env
-                
-                # 设置默认值
-                sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-                sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-                sed -i 's/^youruser=.*/youruser=root/' .env
-                
-                # 生成PEM文件
-                ensure_pem_file
-                
-                echo -e "${YELLOW}环境配置已保存到: $INSTALL_DIR/.env${RESET}"
-            else
-                echo -e "${RED}注册失败! 错误信息: ${RESET}"
-                echo "$SIGNUP_OUTPUT"
-                echo -e "${YELLOW}尝试使用手动方式创建身份...${RESET}"
-                manual_create_identity
-            fi
-            ;;
-        2|*)
-            # 使用手动方式创建
-            manual_create_identity
-            ;;
-    esac
-}
-
-# 配置环境变量
-configure_env() {
-    if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        echo -e "${RED}未找到配置文件(.env)，请先创建配置文件！${RESET}"
         return 1
-    fi
-    
-    cd "$INSTALL_DIR"
-    
-    echo -e "${BLUE}配置环境变量...${RESET}"
-    read -p "请输入用户名 (HUB_USERNAME): " hub_username
-    read -s -p "请输入密码 (HUB_PASSWORD): " hub_password
-    echo
-    
-    # 选择Hub URL
-    echo -e "${YELLOW}请选择 Hub URL:${RESET}"
-    echo "1. 默认本地Hub (ws://localhost:3001/rpc)"
-    echo "2. 官方Hub (wss://hub.naptha.ai/rpc)"
-    echo "3. 自定义Hub URL"
-    read -p "请选择 (默认: 2): " hub_choice
-    
-    case "$hub_choice" in
-        1) hub_url="ws://localhost:3001/rpc" ;;
-        3) 
-            read -p "请输入自定义Hub URL: " hub_url
-            ;;
-        2|*) hub_url="wss://hub.naptha.ai/rpc" ;;
-    esac
-    
-    # 选择Node URL
-    echo -e "${YELLOW}请选择 Node URL:${RESET}"
-    echo "1. 本地Node (http://localhost:7001)"
-    echo "2. 自定义Node URL"
-    read -p "请选择 (默认: 1): " node_choice
-    
-    case "$node_choice" in
-        2) 
-            read -p "请输入自定义Node URL: " node_url
-            ;;
-        1|*) node_url="http://localhost:7001" ;;
-    esac
-    
-    # 选择是否启动Docker
-    echo -e "${YELLOW}是否启动Docker:${RESET}"
-    echo "1. 是 (true)"
-    echo "2. 否 (false)"
-    read -p "请选择 (默认: 1): " docker_choice
-    
-    case "$docker_choice" in
-        2) launch_docker="false" ;;
-        1|*) launch_docker="true" ;;
-    esac
-    
-    # 选择LLM后端
-    echo -e "${YELLOW}选择LLM后端:${RESET}"
-    echo "1. Ollama (ollama)"
-    echo "2. Open AI (openai)"
-    echo "3. Claude (anthropic)"
-    echo "4. Local (local)"
-    echo "5. 自定义"
-    read -p "请选择 (默认: 1): " llm_choice
-    
-    case "$llm_choice" in
-        2) llm_backend="openai" ;;
-        3) llm_backend="anthropic" ;;
-        4) llm_backend="local" ;;
-        5) 
-            read -p "请输入自定义LLM后端: " llm_backend
-            ;;
-        1|*) llm_backend="ollama" ;;
-    esac
-    
-    # 创建或更新 .env 文件
-    if [ -f ".env" ]; then
-        echo -e "${YELLOW}更新 .env 文件...${RESET}"
-        # 更新用户名和密码
-        sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$hub_username/" .env
-        sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$hub_password/" .env
-        
-        # 更新URL
-        if grep -q "^HUB_URL=" .env; then
-            sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env
-        else
-            echo "HUB_URL=$hub_url" >> .env
-        fi
-        
-        if grep -q "^NODE_URL=" .env; then
-            sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env
-        else
-            echo "NODE_URL=$node_url" >> .env
-        fi
-        
-        # 更新Docker和LLM设置
-        sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=$launch_docker/" .env
-        sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=$llm_backend/" .env
-        
-        # 默认用户设置
-        sed -i 's/^youruser=.*/youruser=root/' .env
-    else
-        echo -e "${YELLOW}创建 .env 文件...${RESET}"
-        if [ -f ".env.example" ]; then
-            cp .env.example .env
-            # 更新配置
-            sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$hub_username/" .env
-            sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$hub_password/" .env
-            sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env || echo "HUB_URL=$hub_url" >> .env
-            sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env || echo "NODE_URL=$node_url" >> .env
-            sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=$launch_docker/" .env
-            sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=$llm_backend/" .env
-            sed -i 's/^youruser=.*/youruser=root/' .env
-        else
-            # 创建新的.env文件
-            cat > .env << EOF
-HUB_USERNAME=$hub_username
-HUB_PASSWORD=$hub_password
-HUB_URL=$hub_url
-NODE_URL=$node_url
-LAUNCH_DOCKER=$launch_docker
-LLM_BACKEND=$llm_backend
-youruser=root
-EOF
-        fi
-    fi
-    
-    # 询问是否同时更新naptha-sdk配置
-    read -p "是否同时更新naptha-sdk配置? (y/n): " update_sdk
-    if [[ "$update_sdk" == "y" ]]; then
-        # 创建目录(如果不存在)
-        mkdir -p "$HOME/.naptha"
-        
-        # 检查是否存在配置文件
-        if [ -f "$HOME/.naptha/config.json" ]; then
-            # 备份现有配置
-            cp "$HOME/.naptha/config.json" "$HOME/.naptha/config.json.bak"
-            
-            # 使用jq更新(如果可用)
-            if command -v jq &> /dev/null; then
-                jq --arg huburl "$hub_url" --arg nodeurl "$node_url" '.hub_url = $huburl | .default_node_url = $nodeurl' "$HOME/.naptha/config.json.bak" > "$HOME/.naptha/config.json"
-            else
-                # 简单的文本替换
-                sed -i "s|\"hub_url\":.*|\"hub_url\": \"$hub_url\",|" "$HOME/.naptha/config.json"
-                sed -i "s|\"default_node_url\":.*|\"default_node_url\": \"$node_url\"|" "$HOME/.naptha/config.json"
-            fi
-        else
-            # 创建新配置
-            cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$hub_url",
-    "default_node_url": "$node_url",
-    "identities": {
-        "$username": "$PRIVATE_KEY"
-    }
-}
-EOF
-        fi
-        
-        echo -e "${GREEN}naptha-sdk配置已更新！${RESET}"
-    fi
-    
-    echo -e "${GREEN}环境变量配置完成！${RESET}"
-    echo -e "${YELLOW}配置已保存到: $INSTALL_DIR/.env${RESET}"
-}
-
-# 菜单
-while true; do
-    echo -e "\n${BLUE}NapthaAI 一键管理脚本 - ${AUTHOR}${RESET}"
-    echo -e "1. 安装 NapthaAI 节点"
-    echo -e "2. 创建/管理 Naptha 身份"
-    echo -e "3. 配置环境变量"
-    echo -e "4. 显示/编辑当前环境变量"
-    echo -e "5. 管理 Secrets"
-    echo -e "6. 运行模块"
-    echo -e "7. 管理配置文件"
-    echo -e "8. 查看日志"
-    echo -e "9. 导出 PRIVATE_KEY"
-    echo -e "10. 更换 PEM 文件中的私钥"
-    echo -e "11. 停止节点"
-    echo -e "12. 重新启动节点"
-    echo -e "13. 卸载 NapthaAI"
-    echo -e "14. 检查并修复配置问题"
-    echo -e "15. 修复PRIVATE_KEY格式问题"
-    echo -e "0. 退出"
-    read -p "请选择操作: " choice
-
-    case "$choice" in
-        1) install_node ;;
-        2) create_naptha_identity ;;
-        3) configure_env ;;
-        4) show_env ;;
-        5) manage_secrets ;;
-        6) run_module ;;
-        7) manage_configs ;;
-        8) view_logs ;;
-        9) export_private_key ;;
-        10) 
-            if replace_private_key_in_pem; then
-                stop_containers
-                cd "$INSTALL_DIR"
-                bash launch.sh
-                echo -e "${GREEN}密钥已更换并重新启动节点！${RESET}"
-            fi
-            ;;
-        11) 
-            stop_containers
-            echo -e "${GREEN}节点已停止运行！${RESET}"
-            ;;
-        12) restart_node ;;
-        13) uninstall_node ;;
-        14) check_and_fix ;;
-        15) fix_private_key ;;
-        0) echo -e "${BLUE}退出脚本。${RESET}"; exit 0 ;;
-        *) echo -e "${RED}无效选项，请重新输入！${RESET}" ;;
-    esac
-done
-
-# 修复环境变量文件中的PRIVATE_KEY
-fix_private_key() {
-    echo -e "${BLUE}修复环境变量文件中的PRIVATE_KEY...${RESET}"
-    
-    if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
-        return 1
-    fi
-    
-    cd "$INSTALL_DIR"
-    
-    if [ ! -f ".env" ]; then
-        echo -e "${RED}未找到 .env 文件！${RESET}"
-        return 1
-    fi
-    
-    # 备份原有.env文件
-    cp ".env" ".env.bak-$(date +%Y%m%d%H%M%S)"
-    echo -e "${YELLOW}已备份原.env文件${RESET}"
-    
-    # 提取所有非PRIVATE_KEY的行
-    grep -v "PRIVATE_KEY" ".env" > ".env.temp"
-    
-    # 生成新的PRIVATE_KEY
-    PRIVATE_KEY=$(openssl rand -hex 32)
-    echo "PRIVATE_KEY=\"$PRIVATE_KEY\"" >> ".env.temp"
-    
-    # 替换原文件
-    mv ".env.temp" ".env"
-    
-    echo -e "${GREEN}已成功修复PRIVATE_KEY格式！${RESET}"
-    
-    # 同时更新naptha-sdk配置
-    if [ -f "$HOME/.naptha/config.json" ] && grep -q "HUB_USERNAME" ".env"; then
-        username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2)
-        
-        # 更新config.json中的私钥
-        if command -v jq &> /dev/null; then
-            # 使用jq更新
-            jq --arg username "$username" --arg pk "$PRIVATE_KEY" '.identities[$username] = $pk' "$HOME/.naptha/config.json" > "$HOME/.naptha/config.json.tmp"
-            mv "$HOME/.naptha/config.json.tmp" "$HOME/.naptha/config.json"
-        else
-            # 手动创建新的配置文件
-            hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 || echo "wss://hub.naptha.ai/rpc")
-            node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 || echo "http://localhost:7001")
-            
-            cat > "$HOME/.naptha/config.json" << EOF
-{
-    "hub_url": "$hub_url",
-    "default_node_url": "$node_url",
-    "identities": {
-        "$username": "$PRIVATE_KEY"
-    }
-}
-EOF
-        fi
-        
-        echo -e "${GREEN}已更新naptha-sdk配置中的私钥${RESET}"
     fi
     
     # 检查.env文件中的PRIVATE_KEY格式
@@ -1951,7 +1474,7 @@ EOF
             if [ -f "$HOME/.naptha/config.json" ] && grep -q "HUB_USERNAME" ".env"; then
                 read -p "是否同时更新naptha-sdk配置的身份密钥? (y/n): " update_sdk_pk
                 if [[ "$update_sdk_pk" == "y" ]]; then
-                    username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2)
+                    username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
                     
                     # 更新config.json中的私钥
                     if command -v jq &> /dev/null; then
@@ -1960,8 +1483,8 @@ EOF
                         mv "$HOME/.naptha/config.json.tmp" "$HOME/.naptha/config.json"
                     else
                         # 手动创建新的配置文件
-                        hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 || echo "wss://hub.naptha.ai/rpc")
-                        node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 || echo "http://localhost:7001")
+                        hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs || echo "wss://hub.naptha.ai/rpc")
+                        node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs || echo "http://localhost:7001")
                         
                         cat > "$HOME/.naptha/config.json" << EOF
 {
@@ -1977,21 +1500,1021 @@ EOF
                     echo -e "${GREEN}已更新naptha-sdk配置中的私钥${RESET}"
                 fi
             fi
-            
-            # 询问是否重启节点
-            if docker ps | grep -q "naptha"; then
-                read -p "是否需要重启节点以应用新配置? (y/n): " restart_node
-                if [[ "$restart_node" == "y" ]]; then
-                    echo -e "${YELLOW}正在重启节点...${RESET}"
-                    docker-compose down
-                    bash launch.sh
-                    echo -e "${GREEN}节点已重新启动！${RESET}"
-                fi
-            fi
         else
             echo -e "${GREEN}PRIVATE_KEY格式正确${RESET}"
         fi
     fi
     
+    # 检查PostgreSQL配置
+    if grep -q "PG_PORT" ".env"; then
+        pg_port=$(grep "PG_PORT" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+        echo -e "${YELLOW}PostgreSQL端口: $pg_port${RESET}"
+        
+        # 检查是否有端口冲突
+        if lsof -i:"$pg_port" &> /dev/null; then
+            echo -e "${RED}端口 $pg_port 已被占用，需要修改PostgreSQL端口！${RESET}"
+            read -p "请输入新的PostgreSQL端口号: " new_pg_port
+            sed -i "s/PG_PORT=.*/PG_PORT=$new_pg_port/" ".env"
+            echo -e "${GREEN}已更新PostgreSQL端口为 $new_pg_port${RESET}"
+        else
+            echo -e "${GREEN}PostgreSQL端口未被占用${RESET}"
+        fi
+    fi
+    
+    # 检查提示PEM文件和user.py问题
+    if [ -f "docker-compose.yml" ]; then
+        # 检查用户名
+        if grep -q "HUB_USERNAME" ".env"; then
+            username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+        else
+            username="default"
+        fi
+        
+        # 检查PEM文件是否在Docker卷中正确配置
+        pem_docker_path=$(grep -o "- .*:.*\.pem" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+        if [ -n "$pem_docker_path" ]; then
+            if [ ! -f "$pem_docker_path" ]; then
+                echo -e "${YELLOW}检测到Docker卷PEM文件路径未正确配置: $pem_docker_path${RESET}"
+                # 复制PEM文件到Docker卷路径
+                if [ -f "$INSTALL_DIR/${username}.pem" ]; then
+                    mkdir -p "$(dirname "$pem_docker_path")"
+                    cp "$INSTALL_DIR/${username}.pem" "$pem_docker_path"
+                    echo -e "${GREEN}已复制PEM文件到Docker卷路径${RESET}"
+                else
+                    echo -e "${RED}未找到PEM文件，请先创建PEM文件${RESET}"
+                fi
+            else
+                echo -e "${GREEN}Docker卷PEM文件已正确配置${RESET}"
+            fi
+        fi
+        
+        # 检查user.py文件状态
+        mount_path=$(grep -o "- .*:/app" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+        if [ -n "$mount_path" ] && [ -d "$mount_path" ] && [ -f "$mount_path/node/user.py" ]; then
+            # 检查user.py文件是否包含我们的修复补丁
+            if grep -q "fallback_to_file" "$mount_path/node/user.py"; then
+                echo -e "${GREEN}user.py文件已包含修复补丁${RESET}"
+            else
+                echo -e "${YELLOW}检测到user.py文件未修复，可能无法正确处理私钥${RESET}"
+                read -p "是否要修复user.py文件? (y/n): " fix_userpy
+                if [[ "$fix_userpy" == "y" ]]; then
+                    fix_user_py
+                else
+                    echo -e "${YELLOW}您可以稍后通过选择菜单选项16来修复user.py${RESET}"
+                fi
+            fi
+        fi
+    fi
+    
+    # 询问是否重启节点
+    if docker ps | grep -q "naptha"; then
+        read -p "是否需要重启节点以应用更改? (y/n): " restart_node
+        if [[ "$restart_node" == "y" ]]; then
+            echo -e "${YELLOW}正在重启节点...${RESET}"
+            docker-compose down
+            start_node
+            echo -e "${GREEN}节点已重新启动！${RESET}"
+        fi
+    fi
+    
     return 0
 }
+
+# 修复user.py和私钥处理相关问题
+fix_user_py() {
+    echo -e "${BLUE}修复user.py和private_key处理问题...${RESET}"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    if [ ! -f ".env" ]; then
+        echo -e "${RED}未找到 .env 文件！${RESET}"
+        return 1
+    fi
+    
+    # 首先确保已有有效的private_key
+    if ! grep -q 'PRIVATE_KEY="[0-9a-f]' .env; then
+        echo -e "${YELLOW}未找到有效的PRIVATE_KEY，将生成新的...${RESET}"
+        # 生成新的PRIVATE_KEY（确保是有效的十六进制格式）
+        PRIVATE_KEY=$(openssl rand -hex 32)
+        
+        # 备份原有.env文件
+        cp ".env" ".env.bak-$(date +%Y%m%d%H%M%S)"
+        
+        # 移除旧的PRIVATE_KEY行
+        grep -v "PRIVATE_KEY" ".env" > ".env.temp"
+        
+        # 添加新的PRIVATE_KEY行
+        echo "PRIVATE_KEY=\"$PRIVATE_KEY\"" >> ".env.temp"
+        mv ".env.temp" ".env"
+        
+        echo -e "${GREEN}已生成并配置新的PRIVATE_KEY${RESET}"
+    else
+        echo -e "${GREEN}已有有效的PRIVATE_KEY${RESET}"
+    fi
+    
+    # 创建一个补丁文件，将直接从环境变量中读取PRIVATE_KEY改为从PEM文件读取私钥
+    if [ -f "docker-compose.yml" ]; then
+        # 查找Docker容器app目录的挂载点
+        mount_path=$(grep -o "- .*\:/app" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+        if [ -n "$mount_path" ] && [ -d "$mount_path" ]; then
+            echo -e "${YELLOW}已找到Docker挂载目录：$mount_path${RESET}"
+            
+            # 查看是否存在user.py
+            if [ -f "$mount_path/node/user.py" ]; then
+                echo -e "${YELLOW}找到user.py，准备修复...${RESET}"
+                
+                # 备份原有文件
+                cp "$mount_path/node/user.py" "$mount_path/node/user.py.bak-$(date +%Y%m%d%H%M%S)"
+                
+                # 创建临时补丁文件
+                cat > "$mount_path/node/fix_private_key.patch" << 'EOF'
+--- user.py.orig    2023-03-26 00:00:00.000000000 +0000
++++ user.py    2023-03-26 00:01:00.000000000 +0000
+@@ -50,15 +50,24 @@
+     return PUBLIC_KEY
+ 
+ 
+-def get_public_key(private_key_hex: str) -> str:
++def get_public_key(private_key_hex: str, fallback_to_file: bool = True) -> str:
+     """Generate secp256k1 public key from hex private key."""
+-    if not private_key_hex:
+-        raise ValueError("Empty private key")
+-
+     try:
+-        private_key = SigningKey.from_string(
+-            bytes.fromhex(private_key_hex), curve=SECP256k1
+-        )
++        # 首先尝试将输入作为十六进制字符串处理
++        if private_key_hex and all(c in '0123456789abcdefABCDEF' for c in private_key_hex):
++            private_key = SigningKey.from_string(
++                bytes.fromhex(private_key_hex), curve=SECP256k1
++            )
++        elif fallback_to_file and os.path.exists(private_key_hex):
++            # 如果输入是文件路径，尝试读取PEM文件
++            with open(private_key_hex, "r") as f:
++                pem_content = f.read()
++            private_key = SigningKey.from_pem(pem_content)
++        else:
++            # 生成一个随机私钥作为后备方案
++            logger.warning("Invalid private key format, generating a random key")
++            random_bytes = os.urandom(32)
++            private_key = SigningKey.from_string(random_bytes, curve=SECP256k1)
+     except Exception as e:
+         logger.error(f"Error creating key: {e}")
+         raise ValueError(f"Invalid private key: {e}")
+@@ -79,6 +88,15 @@
+ def get_public_key_from_pem(private_key: str) -> str:
+     """Get public key from PEM file or path."""
+     logger.info(f"Getting public key from {private_key}")
++    
++    # 检查是否为有效的十六进制字符串
++    if private_key and all(c in '0123456789abcdefABCDEF' for c in private_key):
++        return get_public_key(private_key, fallback_to_file=False)
++    
++    # 检查输入是否为PEM文件路径
++    if os.path.exists(private_key):
++        with open(private_key, "r") as f:
++            private_key = f.read()
+ 
+     public_key = get_public_key(private_key)
+     return public_key
+EOF
+                
+                # 应用补丁
+                if command -v patch &> /dev/null; then
+                    # 使用patch命令应用补丁
+                    cd "$mount_path/node" && patch -b user.py fix_private_key.patch
+                    echo -e "${GREEN}成功应用补丁到user.py${RESET}"
+                else
+                    # 如果没有patch命令，提示手动修改
+                    echo -e "${YELLOW}没有找到patch命令，请手动修改user.py文件${RESET}"
+                    echo -e "补丁文件已创建: $mount_path/node/fix_private_key.patch"
+                fi
+            else
+                echo -e "${RED}未找到user.py文件，无法修复${RESET}"
+            fi
+        else
+            echo -e "${RED}未找到Docker挂载目录，无法修复user.py${RESET}"
+        fi
+    fi
+    
+    # 询问是否重启容器
+    read -p "是否重启Docker容器以应用更改? (y/n): " restart
+    if [[ "$restart" == "y" ]]; then
+        echo -e "${YELLOW}重启Docker容器...${RESET}"
+        docker-compose down
+        docker-compose up -d
+        echo -e "${GREEN}Docker容器已重启${RESET}"
+    fi
+    
+    return 0
+}
+
+# 检查提示PEM文件和user.py问题
+if [ -f "docker-compose.yml" ]; then
+    # 检查PEM文件是否在Docker卷中正确配置
+    pem_docker_path=$(grep -o "- .*:.*\.pem" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+    if [ -n "$pem_docker_path" ]; then
+        if [ ! -f "$pem_docker_path" ]; then
+            echo -e "${YELLOW}检测到Docker卷PEM文件路径未正确配置: $pem_docker_path${RESET}"
+            # 复制PEM文件到Docker卷路径
+            if [ -f "$INSTALL_DIR/${username}.pem" ]; then
+                mkdir -p "$(dirname "$pem_docker_path")"
+                cp "$INSTALL_DIR/${username}.pem" "$pem_docker_path"
+                echo -e "${GREEN}已复制PEM文件到Docker卷路径${RESET}"
+            else
+                echo -e "${RED}未找到PEM文件，请先创建PEM文件${RESET}"
+            fi
+        else
+            echo -e "${GREEN}Docker卷PEM文件已正确配置${RESET}"
+        fi
+    fi
+    
+    # 检查user.py文件状态
+    mount_path=$(grep -o "- .*:/app" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+    if [ -n "$mount_path" ] && [ -d "$mount_path" ] && [ -f "$mount_path/node/user.py" ]; then
+        # 检查user.py文件是否包含我们的修复补丁
+        if grep -q "fallback_to_file" "$mount_path/node/user.py"; then
+            echo -e "${GREEN}user.py文件已包含修复补丁${RESET}"
+        else
+            echo -e "${YELLOW}检测到user.py文件未修复，可能无法正确处理私钥${RESET}"
+            read -p "是否要修复user.py文件? (y/n): " fix_userpy
+            if [[ "$fix_userpy" == "y" ]]; then
+                fix_user_py
+            else
+                echo -e "${YELLOW}您可以稍后通过选择菜单选项16来修复user.py${RESET}"
+            fi
+        fi
+    fi
+fi
+
+# 修复PRIVATE_KEY格式问题
+fix_private_key() {
+    echo -e "${BLUE}修复PRIVATE_KEY格式问题...${RESET}"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    if [ ! -f ".env" ]; then
+        echo -e "${RED}未找到 .env 文件！${RESET}"
+        return 1
+    fi
+    
+    # 检查PRIVATE_KEY格式
+    if grep -q "PRIVATE_KEY" ".env"; then
+        # 提取PRIVATE_KEY行
+        private_key_line=$(grep "PRIVATE_KEY" ".env")
+        
+        # 检查是否是RSA私钥（包含BEGIN或END）或是文件路径
+        if [[ "$private_key_line" == *"BEGIN"* ]] || [[ "$private_key_line" == *"END"* ]] || [[ "$private_key_line" == *"/"* ]]; then
+            echo -e "${RED}检测到PRIVATE_KEY格式错误，可能是整个RSA私钥或文件路径${RESET}"
+            
+            # 备份原有.env文件
+            cp ".env" ".env.bak-$(date +%Y%m%d%H%M%S)"
+            echo -e "${GREEN}已备份原有 .env 文件${RESET}"
+            
+            # 检查用户名，用于生成PEM文件
+            if grep -q "HUB_USERNAME" ".env"; then
+                username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+            else
+                # 如果没有找到用户名，提示输入
+                read -p "未找到用户名配置，请输入用户名: " username
+                echo "HUB_USERNAME=$username" >> ".env"
+            fi
+            
+            # 确保PEM文件存在
+            PEM_FILE="${username}.pem"
+            if [ ! -f "$PEM_FILE" ]; then
+                echo -e "${YELLOW}创建新的PEM文件: $PEM_FILE${RESET}"
+                openssl genrsa -out "$PEM_FILE" 2048 || {
+                    echo -e "${RED}使用openssl生成私钥失败，尝试使用ssh-keygen...${RESET}"
+                    ssh-keygen -t rsa -b 2048 -f "$PEM_FILE" -N ""
+                }
+            else
+                echo -e "${GREEN}已找到PEM文件: $PEM_FILE${RESET}"
+            fi
+            
+            # 移除原有的PRIVATE_KEY行
+            grep -v "PRIVATE_KEY" ".env" > ".env.temp"
+            
+            # 生成新的16进制PRIVATE_KEY
+            NEW_PRIVATE_KEY=$(openssl rand -hex 32)
+            echo "PRIVATE_KEY=\"$NEW_PRIVATE_KEY\"" >> ".env.temp"
+            
+            # 替换原文件
+            mv ".env.temp" ".env"
+            
+            echo -e "${GREEN}已成功修复PRIVATE_KEY格式！${RESET}"
+            
+            # 更新naptha-sdk配置
+            if [ -d "$HOME/.naptha" ]; then
+                echo -e "${YELLOW}更新naptha-sdk配置...${RESET}"
+                
+                # 获取HUB_URL和NODE_URL
+                if grep -q "HUB_URL" ".env"; then
+                    hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+                else
+                    hub_url="wss://hub.naptha.ai/rpc"
+                fi
+                
+                if grep -q "NODE_URL" ".env"; then
+                    node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+                else
+                    node_url="http://localhost:7001"
+                fi
+                
+                # 创建或更新配置
+                mkdir -p "$HOME/.naptha"
+                cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "$hub_url",
+    "default_node_url": "$node_url",
+    "identities": {
+        "$username": "$NEW_PRIVATE_KEY"
+    }
+}
+EOF
+                echo -e "${GREEN}已更新naptha-sdk配置${RESET}"
+            fi
+        else
+            echo -e "${GREEN}PRIVATE_KEY格式正确，无需修复${RESET}"
+        fi
+    else
+        echo -e "${YELLOW}未找到PRIVATE_KEY配置，将创建新的...${RESET}"
+        
+        # 检查用户名，用于生成PEM文件
+        if grep -q "HUB_USERNAME" ".env"; then
+            username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+        else
+            # 如果没有找到用户名，提示输入
+            read -p "未找到用户名配置，请输入用户名: " username
+            echo "HUB_USERNAME=$username" >> ".env"
+        fi
+        
+        # 确保PEM文件存在
+        PEM_FILE="${username}.pem"
+        if [ ! -f "$PEM_FILE" ]; then
+            echo -e "${YELLOW}创建新的PEM文件: $PEM_FILE${RESET}"
+            openssl genrsa -out "$PEM_FILE" 2048 || {
+                echo -e "${RED}使用openssl生成私钥失败，尝试使用ssh-keygen...${RESET}"
+                ssh-keygen -t rsa -b 2048 -f "$PEM_FILE" -N ""
+            }
+        fi
+        
+        # 生成新的16进制PRIVATE_KEY
+        NEW_PRIVATE_KEY=$(openssl rand -hex 32)
+        echo "PRIVATE_KEY=\"$NEW_PRIVATE_KEY\"" >> ".env"
+        
+        echo -e "${GREEN}已添加PRIVATE_KEY配置${RESET}"
+        
+        # 更新naptha-sdk配置
+        if [ -d "$HOME/.naptha" ]; then
+            echo -e "${YELLOW}更新naptha-sdk配置...${RESET}"
+            
+            # 获取HUB_URL和NODE_URL
+            if grep -q "HUB_URL" ".env"; then
+                hub_url=$(grep "HUB_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+            else
+                hub_url="wss://hub.naptha.ai/rpc"
+            fi
+            
+            if grep -q "NODE_URL" ".env"; then
+                node_url=$(grep "NODE_URL" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+            else
+                node_url="http://localhost:7001"
+            fi
+            
+            # 创建或更新配置
+            mkdir -p "$HOME/.naptha"
+            cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "$hub_url",
+    "default_node_url": "$node_url",
+    "identities": {
+        "$username": "$NEW_PRIVATE_KEY"
+    }
+}
+EOF
+            echo -e "${GREEN}已更新naptha-sdk配置${RESET}"
+        fi
+    fi
+    
+    return 0
+}
+
+# 加载环境变量文件
+load_env_file() {
+    CURRENT_DIR=$(pwd)
+    ENV_FILE="$CURRENT_DIR/.env"
+    
+    # 检查.env文件是否存在
+    if [ -f "$ENV_FILE" ]; then
+        echo -e "${GREEN}.env文件已找到${RESET}" | tee -a "$LOG_FILE"
+        
+        # 加载.env文件
+        set -a
+        . "$ENV_FILE"
+        set +a
+        
+        # 如果存在虚拟环境，激活它
+        if [ -d ".venv" ]; then
+            . .venv/bin/activate
+        fi
+    else
+        echo -e "${RED}.env文件不存在: $CURRENT_DIR${RESET}" | tee -a "$LOG_FILE"
+        exit 1
+    fi
+}
+
+# Linux系统启动服务器
+linux_start_servers() {
+    # 输出启动服务器信息
+    echo -e "${BLUE}启动服务器...${RESET}" | tee -a "$LOG_FILE"
+    
+    # 从.env文件获取配置
+    node_communication_protocol=${NODE_COMMUNICATION_PROTOCOL:-"ws"}  # 默认为ws
+    num_node_communication_servers=${NUM_NODE_COMMUNICATION_SERVERS:-1}  # 默认为1
+    start_port=${NODE_COMMUNICATION_PORT:-7002}  # 次要服务器的起始端口
+    
+    echo -e "${YELLOW}节点通信协议: $node_communication_protocol${RESET}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}节点通信服务器数量: $num_node_communication_servers${RESET}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}节点通信服务器起始端口: $start_port${RESET}" | tee -a "$LOG_FILE"
+    
+    # 定义路径
+    USER_NAME=$(whoami)
+    CURRENT_DIR=$(pwd)
+    PYTHON_APP_PATH="$CURRENT_DIR/.venv/bin/python"
+    WORKING_DIR="$CURRENT_DIR/node"
+    ENVIRONMENT_FILE_PATH="$CURRENT_DIR/.env"
+    
+    # 首先创建HTTP服务器服务(固定端口7001)
+    HTTP_SERVICE_FILE="nodeapp_http.service"
+    echo -e "${YELLOW}在端口7001上启动HTTP服务器...${RESET}" | tee -a "$LOG_FILE"
+    
+    # 创建systemd服务文件(HTTP服务器)
+    cat <<EOF > /tmp/$HTTP_SERVICE_FILE
+[Unit]
+Description=Node HTTP Server
+After=network.target
+
+[Service]
+ExecStart=$PYTHON_APP_PATH $WORKING_DIR/server/server.py --communication-protocol http --port 7001
+WorkingDirectory=$CURRENT_DIR
+EnvironmentFile=$ENVIRONMENT_FILE_PATH
+User=$USER_NAME
+Restart=always
+TimeoutStopSec=90
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+# 关闭行为的环境变量
+Environment=UVICORN_TIMEOUT=30
+Environment=UVICORN_GRACEFUL_SHUTDOWN=30
+Environment=PATH=$HOME/.local/bin:$HOME/.cargo/bin:${PATH}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 移动HTTP服务文件并启动
+    sudo mv /tmp/$HTTP_SERVICE_FILE /etc/systemd/system/
+    sudo systemctl daemon-reload
+    
+    if sudo systemctl enable $HTTP_SERVICE_FILE && sudo systemctl start $HTTP_SERVICE_FILE; then
+        echo -e "${GREEN}HTTP服务器成功启动，端口7001${RESET}" | tee -a "$LOG_FILE"
+    else
+        echo -e "${RED}HTTP服务器启动失败${RESET}" | tee -a "$LOG_FILE"
+        return 1
+    fi
+    
+    # 记录所有端口(用于.env文件)
+    ports="7001"
+    
+    # 创建额外服务器的服务
+    for ((i=0; i<num_node_communication_servers; i++)); do
+        current_port=$((start_port + i))
+        SERVICE_FILE="nodeapp_${node_communication_protocol}_${current_port}.service"
+        ports="${ports},${current_port}"
+        
+        echo -e "${YELLOW}在端口${current_port}上启动${node_communication_protocol}节点通信服务器...${RESET}" | tee -a "$LOG_FILE"
+        
+        # 创建systemd服务文件
+        cat <<EOF > /tmp/$SERVICE_FILE
+[Unit]
+Description=Node $node_communication_protocol Node Communication Server on port $current_port
+After=network.target nodeapp_http.service
+
+[Service]
+ExecStart=$PYTHON_APP_PATH $WORKING_DIR/server/server.py --communication-protocol $node_communication_protocol --port $current_port
+WorkingDirectory=$CURRENT_DIR
+EnvironmentFile=$ENVIRONMENT_FILE_PATH
+User=$USER_NAME
+Restart=always
+TimeoutStopSec=3
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+Environment=PATH=$HOME/.local/bin:$HOME/.cargo/bin:${PATH}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        
+        # 移动服务文件并启动
+        sudo mv /tmp/$SERVICE_FILE /etc/systemd/system/
+        sudo systemctl daemon-reload
+        
+        if sudo systemctl enable $SERVICE_FILE && sudo systemctl start $SERVICE_FILE; then
+            echo -e "${GREEN}${node_communication_protocol}服务器成功启动，端口${current_port}${RESET}" | tee -a "$LOG_FILE"
+        else
+            echo -e "${RED}${node_communication_protocol}服务器启动失败，端口${current_port}${RESET}" | tee -a "$LOG_FILE"
+        fi
+    done
+    
+    NODE_COMMUNICATION_PORTS=$ports
+}
+
+# MacOS系统启动服务器
+darwin_start_servers() {
+    # 输出启动服务器信息
+    echo -e "${BLUE}启动服务器...${RESET}" | tee -a "$LOG_FILE"
+    
+    # 从.env文件获取配置
+    node_communication_protocol=${NODE_COMMUNICATION_PROTOCOL:-"ws"}  # 默认为ws
+    num_node_communication_servers=${NUM_NODE_COMMUNICATION_SERVERS:-1}  # 默认为1
+    start_port=${NODE_COMMUNICATION_PORT:-7002}  # 次要服务器的起始端口
+    
+    echo -e "${YELLOW}节点通信协议: $node_communication_protocol${RESET}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}节点通信服务器数量: $num_node_communication_servers${RESET}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}节点通信服务器起始端口: $start_port${RESET}" | tee -a "$LOG_FILE"
+    
+    # 定义路径
+    USER_NAME=$(whoami)
+    CURRENT_DIR=$(pwd)
+    PYTHON_APP_PATH="$CURRENT_DIR/.venv/bin/python"  # 直接使用Python
+    WORKING_DIR="$CURRENT_DIR/node"
+    ENVIRONMENT_FILE_PATH="$CURRENT_DIR/.env"
+    
+    # 首先创建HTTP服务器plist文件(固定端口7001)
+    HTTP_PLIST_FILE="com.naptha.nodeapp.http.plist"
+    echo -e "${YELLOW}在端口7001上启动HTTP服务器...${RESET}" | tee -a "$LOG_FILE"
+    
+    PLIST_PATH=$HOME/Library/LaunchAgents/$HTTP_PLIST_FILE
+    
+    # 创建HTTP服务器的plist文件
+    cat <<EOF > $PLIST_PATH
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.naptha.nodeapp.http</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PYTHON_APP_PATH</string>
+        <string>$WORKING_DIR/server/server.py</string>
+        <string>--communication-protocol</string>
+        <string>http</string>
+        <string>--port</string>
+        <string>7001</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+EOF
+    
+    # 从.env文件读取环境变量并添加到plist
+    if [ -f "$ENVIRONMENT_FILE_PATH" ]; then
+        while IFS='=' read -r key value || [ -n "$key" ]; do
+            # 跳过注释行和空行
+            [[ $key =~ ^#.*$ || -z $key ]] && continue
+            
+            # 去除引号
+            value=$(echo "$value" | sed 's/^"//;s/"$//')
+            
+            cat <<EOF >> $PLIST_PATH
+        <key>$key</key>
+        <string>$value</string>
+EOF
+        done < "$ENVIRONMENT_FILE_PATH"
+    fi
+    
+    # 完成plist文件
+    cat <<EOF >> $PLIST_PATH
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>$CURRENT_DIR</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/nodeapp_http.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/nodeapp_http.err</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    
+    # 加载并启动HTTP服务
+    launchctl unload $PLIST_PATH 2>/dev/null || true
+    launchctl load -w $PLIST_PATH
+    
+    echo -e "${GREEN}HTTP服务器成功启动，端口7001${RESET}" | tee -a "$LOG_FILE"
+    
+    # 记录所有端口(用于.env文件)
+    ports="7001"
+    
+    # 创建额外服务器的plist文件
+    for ((i=0; i<num_node_communication_servers; i++)); do
+        current_port=$((start_port + i))
+        PLIST_FILE="com.naptha.nodeapp.${node_communication_protocol}.${current_port}.plist"
+        PLIST_PATH=$HOME/Library/LaunchAgents/$PLIST_FILE
+        ports="${ports},${current_port}"
+        
+        echo -e "${YELLOW}在端口${current_port}上启动${node_communication_protocol}节点通信服务器...${RESET}" | tee -a "$LOG_FILE"
+        
+        # 创建plist文件
+        cat <<EOF > $PLIST_PATH
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.naptha.nodeapp.${node_communication_protocol}.${current_port}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PYTHON_APP_PATH</string>
+        <string>$WORKING_DIR/server/server.py</string>
+        <string>--communication-protocol</string>
+        <string>${node_communication_protocol}</string>
+        <string>--port</string>
+        <string>${current_port}</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+EOF
+        
+        # 从.env文件读取环境变量并添加到plist
+        if [ -f "$ENVIRONMENT_FILE_PATH" ]; then
+            while IFS='=' read -r key value || [ -n "$key" ]; do
+                # 跳过注释行和空行
+                [[ $key =~ ^#.*$ || -z $key ]] && continue
+                
+                # 去除引号
+                value=$(echo "$value" | sed 's/^"//;s/"$//')
+                
+                cat <<EOF >> $PLIST_PATH
+        <key>$key</key>
+        <string>$value</string>
+EOF
+            done < "$ENVIRONMENT_FILE_PATH"
+        fi
+        
+        # 完成plist文件
+        cat <<EOF >> $PLIST_PATH
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>$CURRENT_DIR</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/nodeapp_${node_communication_protocol}_${current_port}.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/nodeapp_${node_communication_protocol}_${current_port}.err</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+        
+        # 加载并启动服务
+        launchctl unload $PLIST_PATH 2>/dev/null || true
+        launchctl load -w $PLIST_PATH
+        
+        echo -e "${GREEN}${node_communication_protocol}服务器成功启动，端口${current_port}${RESET}" | tee -a "$LOG_FILE"
+    done
+    
+    NODE_COMMUNICATION_PORTS=$ports
+}
+
+# 直接启动服务器(不使用systemd或launchd)
+start_servers() {
+    # 输出启动服务器信息
+    echo -e "${BLUE}启动服务器...${RESET}" | tee -a "$LOG_FILE"
+    
+    # 从.env文件获取配置
+    node_communication_protocol=${NODE_COMMUNICATION_PROTOCOL:-"ws"}  # 默认为ws
+    num_node_communication_servers=${NUM_NODE_COMMUNICATION_SERVERS:-1}  # 默认为1
+    start_port=${NODE_COMMUNICATION_PORT:-7002}  # 次要服务器的起始端口
+    
+    echo -e "${YELLOW}节点通信协议: $node_communication_protocol${RESET}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}节点通信服务器数量: $num_node_communication_servers${RESET}" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}节点通信服务器起始端口: $start_port${RESET}" | tee -a "$LOG_FILE"
+    
+    # 定义路径
+    CURRENT_DIR=$(pwd)
+    PYTHON_APP_PATH="$CURRENT_DIR/.venv/bin/python"
+    WORKING_DIR="$CURRENT_DIR/node"
+    LOG_DIR="$CURRENT_DIR/logs"
+    
+    # 创建日志目录
+    mkdir -p "$LOG_DIR"
+    
+    # 启动HTTP服务器(端口7001)
+    echo -e "${YELLOW}在端口7001上启动HTTP服务器...${RESET}" | tee -a "$LOG_FILE"
+    nohup $PYTHON_APP_PATH $WORKING_DIR/server/server.py --communication-protocol http --port 7001 > "$LOG_DIR/http_7001.log" 2>&1 &
+    HTTP_PID=$!
+    echo $HTTP_PID > "$CURRENT_DIR/http_7001.pid"
+    echo -e "${GREEN}HTTP服务器成功启动，端口7001 (PID: $HTTP_PID)${RESET}" | tee -a "$LOG_FILE"
+    
+    # 记录所有端口(用于.env文件)
+    ports="7001"
+    
+    # 启动额外的通信服务器
+    for ((i=0; i<num_node_communication_servers; i++)); do
+        current_port=$((start_port + i))
+        ports="${ports},${current_port}"
+        
+        echo -e "${YELLOW}在端口${current_port}上启动${node_communication_protocol}节点通信服务器...${RESET}" | tee -a "$LOG_FILE"
+        
+        nohup $PYTHON_APP_PATH $WORKING_DIR/server/server.py --communication-protocol $node_communication_protocol --port $current_port > "$LOG_DIR/${node_communication_protocol}_${current_port}.log" 2>&1 &
+        SERVER_PID=$!
+        echo $SERVER_PID > "$CURRENT_DIR/${node_communication_protocol}_${current_port}.pid"
+        
+        echo -e "${GREEN}${node_communication_protocol}服务器成功启动，端口${current_port} (PID: $SERVER_PID)${RESET}" | tee -a "$LOG_FILE"
+    done
+    
+    NODE_COMMUNICATION_PORTS=$ports
+}
+
+# 更新菜单选项，添加新的修复PRIVATE_KEY选项
+
+# 启动NapthaAI节点
+start_node() {
+    echo -e "${BLUE}启动NapthaAI节点...${RESET}"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    # 创建日志文件
+    LOG_DIR="$INSTALL_DIR/logs"
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/node_$(date +%Y%m%d%H%M%S).log"
+    touch "$LOG_FILE"
+    
+    echo -e "${YELLOW}日志文件：$LOG_FILE${RESET}"
+    
+    # 检查.env文件是否存在
+    if [ ! -f ".env" ]; then
+        echo -e "${RED}未找到 .env 文件！${RESET}" | tee -a "$LOG_FILE"
+        return 1
+    fi
+    
+    # 修复私钥格式问题（如有需要）
+    echo -e "${YELLOW}检查私钥格式...${RESET}" | tee -a "$LOG_FILE"
+    fix_private_key
+    
+    # 加载环境变量
+    load_env_file
+    
+    # 获取启动方式配置
+    launch_docker=$(grep "LAUNCH_DOCKER" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | tr '[:upper:]' '[:lower:]' | xargs || echo "true")
+    
+    if [[ "$launch_docker" == "true" ]]; then
+        echo -e "${YELLOW}使用Docker启动节点...${RESET}" | tee -a "$LOG_FILE"
+        
+        # 检查docker-compose是否可用
+        if ! command -v docker-compose &> /dev/null && ! command -v docker compose &> /dev/null; then
+            echo -e "${RED}Docker Compose未安装，请先安装Docker Compose！${RESET}" | tee -a "$LOG_FILE"
+            return 1
+        fi
+        
+        # 先停止现有服务
+        echo -e "${YELLOW}停止现有服务...${RESET}" | tee -a "$LOG_FILE"
+        docker-compose down 2>/dev/null || true
+        
+        # 启动Docker服务
+        echo -e "${YELLOW}启动Docker服务...${RESET}" | tee -a "$LOG_FILE"
+        if docker-compose up -d; then
+            echo -e "${GREEN}Docker服务启动成功！${RESET}" | tee -a "$LOG_FILE"
+            
+            # 等待服务就绪
+            echo -e "${YELLOW}等待服务就绪...${RESET}" | tee -a "$LOG_FILE"
+            sleep 5
+            
+            # 显示容器状态
+            echo -e "${YELLOW}容器状态:${RESET}" | tee -a "$LOG_FILE"
+            docker-compose ps | tee -a "$LOG_FILE"
+            
+            return 0
+        else
+            echo -e "${RED}Docker服务启动失败！${RESET}" | tee -a "$LOG_FILE"
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}使用本地服务启动节点...${RESET}" | tee -a "$LOG_FILE"
+        
+        # 根据操作系统选择启动方式
+        case "$(uname -s)" in
+            Linux*)  
+                # 检查是否有systemd
+                if command -v systemctl &> /dev/null; then
+                    echo -e "${YELLOW}使用systemd启动节点...${RESET}" | tee -a "$LOG_FILE"
+                    linux_start_servers
+                else
+                    echo -e "${YELLOW}使用直接启动方式...${RESET}" | tee -a "$LOG_FILE"
+                    start_servers
+                fi
+                ;;
+            Darwin*)  
+                echo -e "${YELLOW}在MacOS上启动节点...${RESET}" | tee -a "$LOG_FILE"
+                darwin_start_servers
+                ;;
+            *)
+                echo -e "${YELLOW}未识别的操作系统，使用直接启动方式...${RESET}" | tee -a "$LOG_FILE"
+                start_servers
+                ;;
+        esac
+        
+        echo -e "${GREEN}节点服务已启动！${RESET}" | tee -a "$LOG_FILE"
+        return 0
+    fi
+}
+
+# 修改check_and_fix函数，添加对fix_private_key的调用
+check_and_fix() {
+    echo -e "${BLUE}检查并修复配置问题...${RESET}"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}未找到 NapthaAI 节点，请先安装！${RESET}"
+        return 1
+    fi
+    
+    cd "$INSTALL_DIR"
+    
+    # 检查Docker是否安装
+    if ! command -v docker &> /dev/null; then
+        echo -e "${RED}Docker未安装，请先安装Docker！${RESET}"
+        return 1
+    fi
+    
+    # 检查Docker Compose是否安装
+    if ! command -v docker-compose &> /dev/null && ! command -v docker compose &> /dev/null; then
+        echo -e "${RED}Docker Compose未安装，请先安装Docker Compose！${RESET}"
+        return 1
+    fi
+    
+    # 检查是否存在配置文件
+    if [ ! -f ".env" ]; then
+        echo -e "${RED}未找到配置文件(.env)，请先创建配置文件！${RESET}"
+        return 1
+    fi
+    
+    # 调用fix_private_key函数修复PRIVATE_KEY格式
+    echo -e "${YELLOW}检查PRIVATE_KEY格式...${RESET}"
+    fix_private_key
+    
+    # 检查PostgreSQL配置
+    if grep -q "PG_PORT" ".env"; then
+        pg_port=$(grep "PG_PORT" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+        echo -e "${YELLOW}PostgreSQL端口: $pg_port${RESET}"
+        
+        # 检查是否有端口冲突
+        if lsof -i:"$pg_port" &> /dev/null; then
+            echo -e "${RED}端口 $pg_port 已被占用，需要修改PostgreSQL端口！${RESET}"
+            read -p "请输入新的PostgreSQL端口号: " new_pg_port
+            sed -i "s/PG_PORT=.*/PG_PORT=$new_pg_port/" ".env"
+            echo -e "${GREEN}已更新PostgreSQL端口为 $new_pg_port${RESET}"
+        else
+            echo -e "${GREEN}PostgreSQL端口未被占用${RESET}"
+        fi
+    fi
+    
+    # 检查提示PEM文件和user.py问题
+    if [ -f "docker-compose.yml" ]; then
+        # 检查用户名
+        if grep -q "HUB_USERNAME" ".env"; then
+            username=$(grep "HUB_USERNAME" ".env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+        else
+            username="default"
+        fi
+        
+        # 检查PEM文件是否在Docker卷中正确配置
+        pem_docker_path=$(grep -o "- .*:.*\.pem" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+        if [ -n "$pem_docker_path" ]; then
+            if [ ! -f "$pem_docker_path" ]; then
+                echo -e "${YELLOW}检测到Docker卷PEM文件路径未正确配置: $pem_docker_path${RESET}"
+                # 复制PEM文件到Docker卷路径
+                if [ -f "$INSTALL_DIR/${username}.pem" ]; then
+                    mkdir -p "$(dirname "$pem_docker_path")"
+                    cp "$INSTALL_DIR/${username}.pem" "$pem_docker_path"
+                    echo -e "${GREEN}已复制PEM文件到Docker卷路径${RESET}"
+                else
+                    echo -e "${RED}未找到PEM文件，请先创建PEM文件${RESET}"
+                fi
+            else
+                echo -e "${GREEN}Docker卷PEM文件已正确配置${RESET}"
+            fi
+        fi
+        
+        # 检查user.py文件状态
+        mount_path=$(grep -o "- .*:/app" docker-compose.yml | awk -F':' '{print $1}' | sed 's/^- //')
+        if [ -n "$mount_path" ] && [ -d "$mount_path" ] && [ -f "$mount_path/node/user.py" ]; then
+            # 检查user.py文件是否包含我们的修复补丁
+            if grep -q "fallback_to_file" "$mount_path/node/user.py"; then
+                echo -e "${GREEN}user.py文件已包含修复补丁${RESET}"
+            else
+                echo -e "${YELLOW}检测到user.py文件未修复，可能无法正确处理私钥${RESET}"
+                read -p "是否要修复user.py文件? (y/n): " fix_userpy
+                if [[ "$fix_userpy" == "y" ]]; then
+                    fix_user_py
+                else
+                    echo -e "${YELLOW}您可以稍后通过选择菜单选项16来修复user.py${RESET}"
+                fi
+            fi
+        fi
+    fi
+    
+    # 询问是否重启节点
+    if docker ps | grep -q "naptha"; then
+        read -p "是否需要重启节点以应用更改? (y/n): " restart_node
+        if [[ "$restart_node" == "y" ]]; then
+            echo -e "${YELLOW}正在重启节点...${RESET}"
+            docker-compose down
+            start_node
+            echo -e "${GREEN}节点已重新启动！${RESET}"
+        fi
+    fi
+    
+    return 0
+}
+
+# 更新主菜单，添加新的选项
+main_menu() {
+    while true; do
+        echo -e "\n${BLUE}======== NapthaAI 节点管理 ========${RESET}"
+        echo -e "${BLUE}@Fishzone24${RESET}"
+        echo -e "${YELLOW}1. 安装 NapthaAI 节点${RESET}"
+        echo -e "${YELLOW}2. 启动 NapthaAI 节点${RESET}"
+        echo -e "${YELLOW}3. 停止 NapthaAI 节点${RESET}"
+        echo -e "${YELLOW}4. 重启 NapthaAI 节点${RESET}"
+        echo -e "${YELLOW}5. 查看 NapthaAI 日志${RESET}"
+        echo -e "${YELLOW}6. 手动创建 Naptha 身份${RESET}"
+        echo -e "${YELLOW}7. 显示和编辑环境变量${RESET}"
+        echo -e "${YELLOW}8. 管理 Secrets${RESET}"
+        echo -e "${YELLOW}9. 运行模块${RESET}"
+        echo -e "${YELLOW}10. 管理配置文件${RESET}"
+        echo -e "${YELLOW}11. 导出 PRIVATE_KEY${RESET}"
+        echo -e "${YELLOW}12. 更换 PEM 文件中的私钥${RESET}"
+        echo -e "${YELLOW}13. 确保 PEM 文件正确${RESET}"
+        echo -e "${YELLOW}14. 检查并修复配置问题${RESET}"
+        echo -e "${YELLOW}15. 修复PRIVATE_KEY格式问题${RESET}"
+        echo -e "${YELLOW}16. 修复user.py文件${RESET}"
+        echo -e "${YELLOW}17. 卸载 NapthaAI 节点${RESET}"
+        echo -e "${YELLOW}0. 退出${RESET}"
+        read -p "请选择: " choice
+        
+        case $choice in
+            1) install_node ;;
+            2) start_node ;;
+            3) stop_containers ;;
+            4) restart_node ;;
+            5) view_logs ;;
+            6) manual_create_identity ;;
+            7) show_env ;;
+            8) manage_secrets ;;
+            9) run_module ;;
+            10) manage_configs ;;
+            11) export_private_key ;;
+            12) replace_private_key_in_pem ;;
+            13) ensure_pem_file ;;
+            14) check_and_fix ;;
+            15) fix_private_key ;;
+            16) fix_user_py ;;
+            17) uninstall_node ;;
+            0) 
+                echo -e "${GREEN}谢谢使用，再见！${RESET}"
+                exit 0 
+                ;;
+            *) echo -e "${RED}无效选项，请重试！${RESET}" ;;
+        esac
+    done
+}
+
+# 如果直接运行脚本，显示主菜单
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main_menu
+fi
