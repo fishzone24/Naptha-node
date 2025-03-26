@@ -1,74 +1,75 @@
 # Naptha-node
 
-这是一个用于安装和管理 NapthaAI 节点的一键脚本，基于官方文档配置。
+这是一个用于安装和管理NapthaAI节点的一键脚本。
 
-## 功能特点
+## 功能
 
-- 一键安装 NapthaAI 节点
-- 自动配置所有必要的服务（node-app、surreal、rabbitmq、pgvector）
-- 支持导出 PRIVATE_KEY
-- 支持查看节点日志
-- 支持卸载节点
-- 支持更换 PEM 文件中的私钥
-- 支持节点状态管理（启动/停止/重启）
-- 支持查看服务状态
+- 安装NapthaAI节点
+- 创建/管理Naptha身份
+- 配置环境变量
+- 管理Secrets
+- 运行模块（Agent、Tool、Knowledge Base、Memory、Orchestrator）
+- 管理配置文件
+- 查看节点日志
+- 导出PRIVATE_KEY
+- 更换PEM文件中的私钥
+- 停止/重启节点
+- 卸载NapthaAI节点
+
+## 使用方法
+
+### 一键安装脚本
+```bash
+wget -O Naptha-node.sh https://raw.githubusercontent.com/fishzone24/Naptha-node/refs/heads/master/Naptha-node.sh && sed -i 's/\r$//' Naptha-node.sh && chmod +x Naptha-node.sh && ./Naptha-node.sh
+```
+
+### 主要功能说明
+
+1. **安装节点**
+   - 自动安装Docker和Docker Compose
+   - 安装uv包管理器
+   - 创建Python虚拟环境
+   - 安装必要的依赖包
+   - 配置默认环境
+
+2. **身份管理**
+   - 创建新的Naptha身份
+   - 配置Hub用户名和密码
+   - 生成和管理私钥
+
+3. **Secrets管理**
+   - 添加新的Secret
+   - 从环境变量导入Secrets
+   - 查看所有存储的Secrets
+
+4. **模块运行**
+   - 支持运行多种类型的模块：
+     - Agent
+     - Tool
+     - Knowledge Base
+     - Memory
+     - Orchestrator
+   - 支持自定义模块参数
+
+5. **配置文件管理**
+   - 管理deployment.json
+   - 管理agent_deployments.json
+   - 管理kb_deployments.json
 
 ## 系统要求
 
-- Ubuntu 22.04 或更高版本
-- 至少 4GB RAM
-- 至少 20GB 可用磁盘空间
+- Linux操作系统
+- Python 3.10或更高版本
+- Docker和Docker Compose
+- 足够的磁盘空间（建议至少10GB）
 
-## 快速开始
+## 注意事项
 
-### 一键安装命令
-
-```bash
-apt update && apt install -y coreutils wget && wget -O Naptha-node.sh https://raw.githubusercontent.com/fishzone24/Naptha-node/master/Naptha-node.sh && chmod +x Naptha-node.sh && ./Naptha-node.sh --auto-install
-```
-
-### 手动安装
-
-1. 克隆仓库：
-```bash
-git clone https://github.com/fishzone24/Naptha-node.git
-cd Naptha-node
-```
-
-2. 添加执行权限：
-```bash
-chmod +x Naptha-node.sh
-```
-
-3. 运行脚本：
-```bash
-./Naptha-node.sh
-```
-
-## 使用说明
-
-运行脚本后，您可以通过菜单进行以下操作：
-
-1. 安装 NapthaAI 节点
-2. 导出 PRIVATE_KEY
-3. 查看日志
-4. 卸载 NapthaAI
-5. 更换 PEM 文件中的私钥并重启节点
-6. 停止节点运行
-7. 重新启动节点
-8. 查看服务状态
-
-## 默认配置
-
-- 节点端口：7001
-- RabbitMQ 管理界面：15672
-- SurrealDB 端口：3001
-- PostgreSQL 端口：5432
+1. 首次安装时请确保系统已更新到最新版本
+2. 安装过程中需要root权限
+3. 请妥善保管您的私钥和密码
+4. 建议定期备份配置文件
 
 ## 作者
 
 Fishzone24 - [Twitter](https://x.com/fishzone24)
-
-## 许可证
-
-MIT License
