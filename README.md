@@ -24,10 +24,7 @@
 ### 一键安装命令
 
 ```bash
-apt update && apt install -y coreutils wget && \
-wget -O Naptha-node.sh https://raw.githubusercontent.com/fishzone24/Naptha-node/master/Naptha-node.sh && \
-chmod +x Naptha-node.sh && \
-./Naptha-node.sh --auto-install
+apt update && apt install -y coreutils wget && wget -O Naptha-node.sh https://raw.githubusercontent.com/fishzone24/Naptha-node/master/Naptha-node.sh && chmod +x Naptha-node.sh && ./Naptha-node.sh --auto-install
 ```
 
 ### 手动安装

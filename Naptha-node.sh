@@ -12,6 +12,143 @@ RESET='\e[0m'
 # NapthaAI 目录
 INSTALL_DIR="/root/Naptha-Node"
 
+# 安装 Docker
+install_docker() {
+    echo -e "${BLUE}正在安装 Docker...${RESET}"
+    apt-get update
+    apt-get install -y ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    echo "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get update
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    systemctl enable docker
+    systemctl start docker
+    echo -e "${GREEN}Docker 安装完成！${RESET}"
+}
+
+# 安装 NapthaAI 节点
+install_node() {
+    echo -e "${BLUE}正在安装 NapthaAI 节点...${RESET}"
+    
+    # 创建必要的目录
+    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR/data/surreal"
+    mkdir -p "$INSTALL_DIR/data/rabbitmq"
+    mkdir -p "$INSTALL_DIR/data/postgres"
+    
+    # 创建 .env 文件
+    cat > "$INSTALL_DIR/.env" << 'EOL'
+# Docker 设置
+DOCKER_COMPOSE_VERSION=v2.24.5
+DOCKER_COMPOSE_ARCH=linux-x86_64
+DOCKER_COMPOSE_BASE_URL=https://github.com/docker/compose/releases/download
+
+# SurrealDB 设置
+HUB_DB_SURREAL_USER=root
+HUB_DB_SURREAL_PASS=root
+HUB_DB_SURREAL_PORT=3001
+HUB_DB_SURREAL_NS=test
+HUB_DB_SURREAL_DB=test
+HUB_DB_SURREAL_HOST=surreal
+
+# RabbitMQ 设置
+RABBITMQ_DEFAULT_USER=username
+RABBITMQ_DEFAULT_PASS=password
+RABBITMQ_DEFAULT_VHOST=/
+RABBITMQ_ERLANG_COOKIE=secret_cookie
+RABBITMQ_MANAGEMENT_PORT=15672
+
+# 节点设置
+NODE_PORT=7001
+REGISTER_NODE_WITH_HUB=true
+LOCAL_HUB=true
+EOL
+
+    # 创建 docker-compose.yml 文件
+    cat > "$INSTALL_DIR/docker-compose.yml" << 'EOL'
+version: '3.8'
+
+services:
+  node-app:
+    image: napthaai/node:latest
+    container_name: node-app
+    ports:
+      - "7001:7001"
+    environment:
+      - NODE_PORT=7001
+      - REGISTER_NODE_WITH_HUB=true
+      - LOCAL_HUB=true
+    volumes:
+      - ./data:/data
+    depends_on:
+      - surreal
+      - rabbitmq
+      - pgvector
+    networks:
+      - naptha-network
+
+  surreal:
+    image: surrealdb/surrealdb:latest
+    container_name: surreal
+    ports:
+      - "3001:3001"
+    environment:
+      - SURREAL_USER=root
+      - SURREAL_PASS=root
+    volumes:
+      - ./data/surreal:/data
+    networks:
+      - naptha-network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=username
+      - RABBITMQ_DEFAULT_PASS=password
+      - RABBITMQ_DEFAULT_VHOST=/
+      - RABBITMQ_ERLANG_COOKIE=secret_cookie
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    networks:
+      - naptha-network
+
+  pgvector:
+    image: ankane/pgvector:latest
+    container_name: pgvector
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - naptha-network
+
+networks:
+  naptha-network:
+    driver: bridge
+EOL
+
+    # 启动服务
+    cd "$INSTALL_DIR"
+    docker-compose down
+    docker-compose up -d
+    
+    echo -e "${GREEN}NapthaAI 节点安装完成！${RESET}"
+    echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    echo -e "RabbitMQ 管理界面: ${YELLOW}http://$(hostname -I | awk '{print $1}'):15672${RESET}"
+    echo -e "用户名: ${YELLOW}username${RESET}"
+    echo -e "密码: ${YELLOW}password${RESET}"
+}
+
 # 检查是否是一键安装命令
 if [ "$1" = "--auto-install" ]; then
     echo -e "${BLUE}开始自动安装 NapthaAI 节点...${RESET}"
@@ -57,22 +194,6 @@ check_python_venv() {
     fi
 }
 
-# 安装 Docker 和 Docker Compose
-install_docker() {
-    echo -e "${BLUE}检查并安装 Docker 和 Docker Compose...${RESET}"
-    if ! command -v docker &> /dev/null; then
-        echo -e "${BLUE}安装 Docker...${RESET}"
-        curl -fsSL https://get.docker.com | sudo bash
-        sudo systemctl enable --now docker
-    fi
-
-    if ! command -v docker-compose &> /dev/null; then
-        echo -e "${BLUE}安装 Docker Compose...${RESET}"
-        sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-        sudo chmod +x /usr/local/bin/docker-compose
-    fi
-}
-
 # 创建虚拟环境并安装依赖
 create_virtualenv() {
     check_python_venv
@@ -108,129 +229,6 @@ replace_private_key_in_pem() {
     echo "$new_private_key" > "$PEM_FILE"
     echo -e "${GREEN}私钥已更新！${RESET}"
     return 0
-}
-
-# 安装 NapthaAI 节点
-install_node() {
-    install_docker
-    echo -e "${BLUE}安装 NapthaAI 节点...${RESET}"
-    if [ ! -d "$INSTALL_DIR" ]; then
-        git clone https://github.com/NapthaAI/node.git "$INSTALL_DIR"
-    fi
-    cd "$INSTALL_DIR"
-
-    # 创建必要的目录
-    mkdir -p data/surreal data/rabbitmq data/postgres
-
-    # 创建 .env 配置文件
-    echo -e "${BLUE}创建 .env 配置文件...${RESET}"
-    cat > .env << 'EOL'
-# 基本配置
-LAUNCH_DOCKER=true
-LLM_BACKEND=ollama
-OLLAMA_MODELS=hermes3:8b
-
-# Hub 配置
-LOCAL_HUB=true
-REGISTER_NODE_WITH_HUB=true
-
-# SurrealDB 配置
-HUB_DB_SURREAL_ROOT_USER=root
-HUB_DB_SURREAL_ROOT_PASS=root
-HUB_DB_SURREAL_PORT=3001
-HUB_DB_SURREAL_NS="naptha"
-HUB_DB_SURREAL_NAME="naptha"
-HUB_DB_SURREAL_HOST=surreal
-
-# RabbitMQ 配置
-RMQ_HOST=rabbitmq
-RMQ_USER=username
-RMQ_PASS=password
-
-# 节点配置
-NODE_IP=0.0.0.0
-NODE_COMMUNICATION_PORT=7001
-EOL
-
-    # 创建 docker-compose.yml
-    echo -e "${BLUE}创建 docker-compose.yml 配置文件...${RESET}"
-    cat > docker-compose.yml << 'EOL'
-version: '3.8'
-
-services:
-  node-app:
-    image: napthaai/node:latest
-    container_name: node-app
-    ports:
-      - "7001:7001"
-    environment:
-      - NODE_IP=0.0.0.0
-      - NODE_COMMUNICATION_PORT=7001
-    volumes:
-      - .:/app
-    depends_on:
-      - rabbitmq
-      - surreal
-      - pgvector
-    networks:
-      - naptha-network
-
-  surreal:
-    image: surrealdb/surrealdb:latest
-    container_name: surreal
-    ports:
-      - "3001:3001"
-    environment:
-      - SURREAL_USER=root
-      - SURREAL_PASS=root
-    volumes:
-      - ./data/surreal:/data
-    networks:
-      - naptha-network
-
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: rabbitmq
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      - RABBITMQ_DEFAULT_USER=username
-      - RABBITMQ_DEFAULT_PASS=password
-    volumes:
-      - ./data/rabbitmq:/var/lib/rabbitmq
-    networks:
-      - naptha-network
-
-  pgvector:
-    image: ankane/pgvector:latest
-    container_name: pgvector
-    ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=litellm
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    networks:
-      - naptha-network
-
-networks:
-  naptha-network:
-    driver: bridge
-EOL
-    
-    # 启动 NapthaAI 节点
-    echo -e "${BLUE}启动 NapthaAI 节点...${RESET}"
-    docker-compose down
-    docker-compose up -d
-
-    echo -e "${GREEN}NapthaAI 节点已成功启动！${RESET}"
-    echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
-    echo -e "RabbitMQ 管理界面: ${YELLOW}http://$(hostname -I | awk '{print $1}'):15672${RESET}"
-    echo -e "用户名: ${YELLOW}username${RESET}"
-    echo -e "密码: ${YELLOW}password${RESET}"
 }
 
 # 导出 PRIVATE_KEY
