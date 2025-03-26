@@ -236,6 +236,18 @@ manual_create_identity() {
         1|*) node_url="http://localhost:7001" ;;
     esac
     
+    # 询问是否自定义PostgreSQL端口
+    echo -e "${YELLOW}是否需要自定义PostgreSQL端口? (默认端口为5432)${RESET}"
+    echo "1. 使用默认端口 (5432)"
+    echo "2. 自定义端口"
+    read -p "请选择 (默认: 1): " db_port_choice
+    
+    pg_port="5432"
+    if [ "$db_port_choice" = "2" ]; then
+        read -p "请输入自定义PostgreSQL端口: " pg_port
+        echo -e "${YELLOW}将使用自定义PostgreSQL端口: $pg_port${RESET}"
+    fi
+    
     # 创建或更新 .env 文件
     if [ -f ".env" ]; then
         echo -e "${YELLOW}更新 .env 文件...${RESET}"
@@ -243,10 +255,10 @@ manual_create_identity() {
         sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env
         sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env
         sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env
-        # 设置默认值
-        sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-        sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-        sed -i 's/^youruser=.*/youruser=root/' .env
+        sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/" .env
+        sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=ollama/" .env
+        sed -i "s/^youruser=.*/youruser=root/" .env
+        sed -i "s/^PG_PORT=.*/PG_PORT=$pg_port/" .env
     else
         echo -e "${YELLOW}创建 .env 文件...${RESET}"
         if [ -f ".env.example" ]; then
@@ -255,10 +267,10 @@ manual_create_identity() {
             sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env
             sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env || echo "HUB_URL=$hub_url" >> .env
             sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env || echo "NODE_URL=$node_url" >> .env
-            # 设置默认值
-            sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-            sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-            sed -i 's/^youruser=.*/youruser=root/' .env
+            sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/" .env
+            sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=ollama/" .env
+            sed -i "s/^youruser=.*/youruser=root/" .env
+            sed -i "s/^PG_PORT=.*/PG_PORT=$pg_port/" .env
         else
             # 创建一个新的.env文件
             cat > .env << EOF
@@ -269,6 +281,7 @@ NODE_URL=$node_url
 LAUNCH_DOCKER=true
 LLM_BACKEND=ollama
 youruser=root
+PG_PORT=$pg_port
 EOF
         fi
     fi
@@ -337,7 +350,8 @@ show_env() {
     echo "4. Node URL (NODE_URL)"
     echo "5. 启动Docker (LAUNCH_DOCKER)"
     echo "6. LLM后端 (LLM_BACKEND)"
-    echo "7. 使用文本编辑器编辑整个文件"
+    echo "7. PostgreSQL端口 (PG_PORT)"
+    echo "8. 使用文本编辑器编辑整个文件"
     echo "0. 返回"
     
     read -p "请选择: " env_choice
@@ -515,6 +529,49 @@ EOF
             echo -e "${GREEN}LLM_BACKEND 已更新为: $new_llm${RESET}"
             ;;
         7)
+            echo -e "${YELLOW}选择 PostgreSQL端口:${RESET}"
+            echo "1. 使用默认端口 (5432)"
+            echo "2. 自定义端口"
+            read -p "请选择 (默认: 1): " db_port_choice
+            
+            pg_port="5432"
+            if [ "$db_port_choice" = "2" ]; then
+                read -p "请输入自定义PostgreSQL端口: " pg_port
+                echo -e "${YELLOW}将使用自定义PostgreSQL端口: $pg_port${RESET}"
+            fi
+            
+            # 更新PG_PORT
+            if grep -q "^PG_PORT=" .env; then
+                sed -i "s/^PG_PORT=.*/PG_PORT=$pg_port/" .env
+            else
+                echo "PG_PORT=$pg_port" >> .env
+            fi
+            
+            echo -e "${GREEN}PostgreSQL端口已更新为: $pg_port${RESET}"
+            echo -e "${YELLOW}注意: 如果节点已运行，请重启节点以应用新设置${RESET}"
+            
+            # 询问是否现在重启节点
+            if docker ps | grep -q "naptha"; then
+                read -p "是否立即重启节点以应用新的PostgreSQL端口? (y/n): " restart_now
+                if [[ "$restart_now" == "y" ]]; then
+                    echo -e "${YELLOW}正在重启节点...${RESET}"
+                    docker-compose down
+                    bash launch.sh
+                    
+                    # 等待PostgreSQL初始化
+                    echo -e "${YELLOW}等待PostgreSQL初始化...${RESET}"
+                    sleep 10
+                    
+                    if docker ps | grep -q "naptha-postgres" && docker exec naptha-postgres pg_isready -U naptha -d naptha 2>/dev/null; then
+                        echo -e "${GREEN}节点已重启，PostgreSQL连接正常！${RESET}"
+                    else
+                        echo -e "${RED}PostgreSQL无法连接，请检查日志:${RESET}"
+                        docker logs naptha-postgres 2>&1 | tail -n 20
+                    fi
+                fi
+            fi
+            ;;
+        8)
             # 使用文本编辑器编辑
             if command -v nano &> /dev/null; then
                 nano .env
@@ -931,20 +988,84 @@ install_node() {
         NAPTHA_CMD="naptha"
     fi
     
-    # 使用手动方式创建身份，避免连接错误
-    if [ ! -f ".env" ] || ! grep -q "HUB_USERNAME" ".env"; then
-        echo -e "${BLUE}创建 Naptha 身份...${RESET}"
-        manual_create_identity
+    # 提示用户创建Naptha账户
+    echo -e "${BLUE}立即创建Naptha身份...${RESET}"
+    echo -e "${YELLOW}请输入用户名和密码创建Naptha账户${RESET}"
+    read -p "请输入用户名: " username
+    read -s -p "请输入密码: " password
+    echo
+    
+    # 选择Hub URL
+    echo -e "${YELLOW}请选择 Hub URL:${RESET}"
+    echo "1. 默认本地Hub (ws://localhost:3001/rpc)"
+    echo "2. 官方Hub (wss://hub.naptha.ai/rpc)"
+    echo "3. 自定义Hub URL"
+    read -p "请选择 (默认: 2): " hub_choice
+    
+    case "$hub_choice" in
+        1) hub_url="ws://localhost:3001/rpc" ;;
+        3) 
+            read -p "请输入自定义Hub URL: " hub_url
+            ;;
+        2|*) hub_url="wss://hub.naptha.ai/rpc" ;;
+    esac
+    
+    # 选择Node URL
+    echo -e "${YELLOW}请选择 Node URL:${RESET}"
+    echo "1. 本地Node (http://localhost:7001)"
+    echo "2. 自定义Node URL"
+    read -p "请选择 (默认: 1): " node_choice
+    
+    case "$node_choice" in
+        2) 
+            read -p "请输入自定义Node URL: " node_url
+            ;;
+        1|*) node_url="http://localhost:7001" ;;
+    esac
+    
+    # 创建或更新 .env 文件
+    if [ -f ".env.example" ]; then
+        cp .env.example .env
     else
-        # 复制 .env 配置文件
-        if [ ! -f ".env" ]; then
-            echo -e "${BLUE}创建 .env 配置文件...${RESET}"
-            cp .env.example .env
-            sed -i 's/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/' .env
-            sed -i 's/^LLM_BACKEND=.*/LLM_BACKEND=ollama/' .env
-            sed -i 's/^youruser=.*/youruser=root/' .env  # 设置为 root 用户
-        fi
+        touch .env
     fi
+    
+    sed -i "s/^HUB_USERNAME=.*/HUB_USERNAME=$username/" .env 2>/dev/null || echo "HUB_USERNAME=$username" >> .env
+    sed -i "s/^HUB_PASSWORD=.*/HUB_PASSWORD=$password/" .env 2>/dev/null || echo "HUB_PASSWORD=$password" >> .env
+    sed -i "s#^HUB_URL=.*#HUB_URL=$hub_url#" .env 2>/dev/null || echo "HUB_URL=$hub_url" >> .env
+    sed -i "s#^NODE_URL=.*#NODE_URL=$node_url#" .env 2>/dev/null || echo "NODE_URL=$node_url" >> .env
+    sed -i "s/^LAUNCH_DOCKER=.*/LAUNCH_DOCKER=true/" .env 2>/dev/null || echo "LAUNCH_DOCKER=true" >> .env
+    sed -i "s/^LLM_BACKEND=.*/LLM_BACKEND=ollama/" .env 2>/dev/null || echo "LLM_BACKEND=ollama" >> .env
+    sed -i "s/^youruser=.*/youruser=root/" .env 2>/dev/null || echo "youruser=root" >> .env
+    sed -i "s/^PG_PORT=.*/PG_PORT=$pg_port/" .env 2>/dev/null || echo "PG_PORT=$pg_port" >> .env
+    
+    # 生成PEM文件
+    echo -e "${YELLOW}正在生成私钥...${RESET}"
+    PEM_FILE="$INSTALL_DIR/${username}.pem"
+    openssl genrsa -out "$PEM_FILE" 2048 || {
+        echo -e "${RED}使用openssl生成私钥失败，尝试使用ssh-keygen...${RESET}"
+        ssh-keygen -t rsa -b 2048 -f "$PEM_FILE" -N ""
+    }
+    
+    if [ -f "$PEM_FILE" ]; then
+        PRIVATE_KEY=$(cat "$PEM_FILE")
+        echo "PRIVATE_KEY=$PRIVATE_KEY" >> .env
+        echo -e "${GREEN}私钥已生成并添加到配置中${RESET}"
+    else
+        echo -e "${RED}无法生成私钥文件，请检查系统权限${RESET}"
+    fi
+    
+    # 更新naptha-sdk配置
+    mkdir -p "$HOME/.naptha"
+    cat > "$HOME/.naptha/config.json" << EOF
+{
+    "hub_url": "$hub_url",
+    "default_node_url": "$node_url",
+    "identities": {
+        "$username": "$(openssl rand -hex 32)"
+    }
+}
+EOF
     
     # 创建必要的目录
     mkdir -p "$INSTALL_DIR/configs"
@@ -981,10 +1102,61 @@ EOF
     
     # 启动 NapthaAI 节点
     echo -e "${BLUE}启动 NapthaAI 节点...${RESET}"
+    echo -e "${YELLOW}正在初始化数据库，这可能需要一些时间，请耐心等待...${RESET}"
+    
+    # 尝试启动节点
     bash launch.sh
+    
+    # 等待PostgreSQL初始化
+    echo -e "${YELLOW}等待PostgreSQL初始化...${RESET}"
+    max_retries=5
+    retry_count=0
+    sleep_time=10
+    
+    while [ $retry_count -lt $max_retries ]; do
+        # 检查PostgreSQL容器是否运行
+        if docker ps | grep -q "naptha-postgres"; then
+            # 检查PostgreSQL是否可连接
+            if docker exec naptha-postgres pg_isready -U naptha -d naptha 2>/dev/null; then
+                echo -e "${GREEN}PostgreSQL初始化成功！${RESET}"
+                break
+            fi
+        fi
+        
+        # 如果到达最大重试次数
+        if [ $retry_count -ge $((max_retries-1)) ]; then
+            break
+        fi
+        
+        retry_count=$((retry_count+1))
+        echo -e "${YELLOW}PostgreSQL还未就绪，等待${sleep_time}秒后重试... (${retry_count}/${max_retries})${RESET}"
+        sleep $sleep_time
+    done
 
-    echo -e "${GREEN}NapthaAI 节点已成功启动！${RESET}"
-    echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    # 检查是否成功启动
+    if docker ps | grep -q "naptha-postgres" && docker ps | grep -q "naptha"; then
+        echo -e "${GREEN}NapthaAI 节点已成功启动！${RESET}"
+        echo -e "${GREEN}用户名: $username${RESET}"
+        echo -e "${GREEN}Hub URL: $hub_url${RESET}"
+        echo -e "${GREEN}Node URL: $node_url${RESET}"
+        echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    else
+        echo -e "${RED}启动失败！可能是数据库初始化出现问题${RESET}"
+        echo -e "${YELLOW}您可以尝试:${RESET}"
+        echo -e "1. 检查PostgreSQL错误信息:"
+        echo -e "   docker logs naptha-postgres 2>&1 | tail -n 20"
+        echo -e "2. 尝试设置不同的PostgreSQL端口"
+        echo -e "3. 使用以下命令手动启动:"
+        echo -e "   cd $INSTALL_DIR && bash launch.sh"
+        echo -e "4. 或选择主菜单选项14(检查并修复配置问题)"
+        
+        
+        # 询问用户是否要显示日志
+        read -p "是否显示PostgreSQL日志? (y/n): " show_logs
+        if [[ "$show_logs" == "y" ]]; then
+            docker logs naptha-postgres 2>&1 | tail -n 20
+        fi
+    fi
 }
 
 # 导出 PRIVATE_KEY
@@ -1209,12 +1381,55 @@ check_and_fix() {
             echo -e "${GREEN}已添加 NODE_URL=http://localhost:7001${RESET}"
         fi
         
-        # 询问是否需要修改配置
-        if [ "$HUB_URL_CONFIGURED" = true ] && [ "$NODE_URL_CONFIGURED" = true ]; then
-            read -p "是否需要修改 Hub/Node URL 配置? (y/n): " change_urls
-            if [[ "$change_urls" == "y" ]]; then
-                show_env
+        # 检查PostgreSQL端口配置
+        if ! grep -q "PG_PORT" ".env"; then
+            echo -e "${YELLOW}未找到 PG_PORT 配置，将使用默认端口5432...${RESET}"
+            echo "PG_PORT=5432" >> ".env"
+            echo -e "${GREEN}已添加 PG_PORT=5432${RESET}"
+        fi
+        
+        # 检查数据库连接问题
+        if docker ps | grep -q "naptha-postgres"; then
+            echo -e "${YELLOW}检查PostgreSQL连接...${RESET}"
+            if ! docker exec naptha-postgres pg_isready -U naptha -d naptha 2>/dev/null; then
+                echo -e "${RED}PostgreSQL连接失败，可能端口冲突${RESET}"
+                
+                current_port=$(grep "PG_PORT" ".env" | cut -d= -f2)
+                echo -e "${YELLOW}当前PostgreSQL端口: $current_port${RESET}"
+                echo -e "${YELLOW}尝试设置新端口...${RESET}"
+                
+                read -p "请输入新的PostgreSQL端口 (默认5433): " new_port
+                new_port=${new_port:-5433}
+                
+                # 更新端口配置
+                sed -i "s/^PG_PORT=.*/PG_PORT=$new_port/" ".env"
+                echo -e "${GREEN}已更新PostgreSQL端口为 $new_port${RESET}"
+                
+                # 停止并重启容器
+                echo -e "${YELLOW}正在重启容器以应用新端口...${RESET}"
+                docker-compose down
+                bash launch.sh
+                
+                # 等待PostgreSQL初始化
+                echo -e "${YELLOW}等待PostgreSQL初始化...${RESET}"
+                sleep 10
+                
+                if docker ps | grep -q "naptha-postgres" && docker exec naptha-postgres pg_isready -U naptha -d naptha 2>/dev/null; then
+                    echo -e "${GREEN}PostgreSQL连接成功！${RESET}"
+                else
+                    echo -e "${RED}PostgreSQL仍然无法连接${RESET}"
+                    echo -e "${YELLOW}请检查日志:${RESET}"
+                    docker logs naptha-postgres 2>&1 | tail -n 20
+                fi
+            else
+                echo -e "${GREEN}PostgreSQL连接正常！${RESET}"
             fi
+        fi
+        
+        # 询问是否需要修改配置
+        read -p "是否需要修改配置? (y/n): " change_config
+        if [[ "$change_config" == "y" ]]; then
+            show_env
         fi
     fi
     
