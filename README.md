@@ -18,7 +18,7 @@
 在 Ubuntu 服务器上，复制以下命令并粘贴到终端中执行，即可自动下载、设置权限并运行脚本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fishzone24/naptha-node-manager/main/naptha-node.sh -o naptha-node.sh && chmod +x naptha-node.sh && ./naptha-node.sh
+curl -fsSL https://raw.githubusercontent.com/fishzone24/Naptha-node/master/Naptha-node.sh -o Naptha-node.sh && chmod +x Naptha-node.sh && ./Naptha-node.sh
 ```
 
 > 注意：脚本托管在 GitHub，请确保您的服务器可以访问 GitHub。
