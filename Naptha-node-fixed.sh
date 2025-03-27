@@ -1,19 +1,16 @@
-@ -0,0 +1,218 @@
 #!/bin/bash
 
-set -e  # 遇到错误立即退出
-
 # 定义颜色
-BLUE='\e[36m'  # 海蓝色
-GREEN='\e[32m'
-YELLOW='\e[33m'
-RED='\e[31m'
-RESET='\e[0m'
+BLUE='\033[36m'  # 海蓝色
+GREEN='\033[32m'
+YELLOW='\033[33m'
+RED='\033[31m'
+RESET='\033[0m'
 
 # NapthaAI 目录
 INSTALL_DIR="/root/Naptha-Node"
 
-# 炫酷的 @fishzone24 字符标识
+# 展示标识
 echo -e "${BLUE}"
 cat << "EOF"
 
