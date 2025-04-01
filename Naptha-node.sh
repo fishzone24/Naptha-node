@@ -408,18 +408,42 @@ restart_node() {
 view_logs() {
     echo -e "${GREEN}查看 Naptha 节点日志...${RESET}"
     
+    # 检查安装目录是否存在
     if [ ! -d "$INSTALL_DIR" ]; then
-        echo -e "${RED}节点安装目录不存在，请先安装节点${RESET}"
-        return 1
+        echo -e "${RED}错误：Naptha 节点未安装${RESET}"
+        echo -e "${YELLOW}请先安装 Naptha 节点${RESET}"
+        read -n 1 -s -r -p "按任意键返回主菜单..."
+        return
     fi
     
+    # 进入安装目录
     cd "$INSTALL_DIR"
-    if [ -f "docker-compose.yml" ]; then
-        docker-compose logs -f --tail=300
-    else
-        echo -e "${RED}找不到 docker-compose.yml 文件，无法查看日志${RESET}"
-        return 1
+    
+    # 检查 docker-compose.yml 是否存在
+    if [ ! -f "docker-compose.yml" ]; then
+        echo -e "${RED}错误：docker-compose.yml 文件不存在${RESET}"
+        echo -e "${YELLOW}请确保节点安装正确${RESET}"
+        read -n 1 -s -r -p "按任意键返回主菜单..."
+        return
     fi
+    
+    # 检查容器是否在运行
+    if ! docker compose ps | grep -q "naptha-node"; then
+        echo -e "${RED}错误：Naptha 节点未运行${RESET}"
+        echo -e "${YELLOW}请先启动节点${RESET}"
+        read -n 1 -s -r -p "按任意键返回主菜单..."
+        return
+    fi
+    
+    echo -e "${GREEN}正在获取节点日志...${RESET}"
+    echo -e "${YELLOW}按 Ctrl+C 可以退出日志查看${RESET}"
+    
+    # 使用 docker compose 查看日志
+    docker compose logs -f --tail=300
+    
+    # 等待用户确认
+    echo -e "\n${YELLOW}按任意键返回主菜单...${RESET}"
+    read -n 1 -s -r
 }
 
 # 删除 Naptha 节点
