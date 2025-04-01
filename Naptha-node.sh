@@ -218,28 +218,69 @@ install_naptha_node() {
     if [ -f "docker-compose.yml" ] && [ "$ollama_port" != "11434" ]; then
         echo -e "${GREEN}修改 Ollama 端口为 ${YELLOW}$ollama_port${RESET}"
         
-        # 修改docker-compose.yml中的端口映射和环境变量
-        # 使用内部端口也与默认端口不同，避免容器间端口冲突
-        sed -i "s/- \"11434:11434\"/- \"$ollama_port:$ollama_port\"/" docker-compose.yml
+        # 备份原始 docker-compose.yml 文件
+        cp docker-compose.yml docker-compose.yml.bak
+        echo -e "${GREEN}已备份原始 docker-compose.yml 文件为 ${YELLOW}docker-compose.yml.bak${RESET}"
         
-        # 修改ollama容器的启动命令，使用自定义端口
-        if grep -q "command:" docker-compose.yml; then
-            # 如果已有command行，修改它
-            grep -q "command:.*--port" docker-compose.yml && \
-                sed -i "s/command:.*--port.*/command: ['ollama', 'serve', '--port', '$ollama_port']/" docker-compose.yml || \
-                sed -i "s/command:.*/command: ['ollama', 'serve', '--port', '$ollama_port']/" docker-compose.yml
+        # 检查docker-compose.yml中的ollama服务配置
+        if grep -q "ollama:" docker-compose.yml; then
+            echo -e "${GREEN}找到 ollama 服务配置，开始修改...${RESET}"
+            
+            # 尝试更彻底的方法 - 直接替换整个 ollama 服务配置
+            echo -e "${GREEN}使用替换方法重新配置 Ollama 服务...${RESET}"
+            
+            # 创建新的 ollama 配置，指定自定义端口
+            NEW_OLLAMA_CONFIG="  ollama:
+        container_name: node-ollama
+        image: ollama/ollama:latest
+        restart: unless-stopped
+        command: [\"ollama\", \"serve\", \"--port\", \"$ollama_port\"]
+        ports:
+          - \"$ollama_port:$ollama_port\"
+        environment:
+          - OLLAMA_PORT=$ollama_port
+        volumes:
+          - ~/.ollama:/root/.ollama
+        deploy:
+          resources:
+            reservations:
+              devices:
+                - driver: nvidia
+                  count: all
+                  capabilities: [gpu]"
+            
+            # 创建临时文件
+            touch docker-compose.yml.new
+            
+            # 逐行处理 docker-compose.yml 文件，当遇到 ollama: 开始的行时替换整个块
+            # 用 awk 处理模式与动作
+            cat docker-compose.yml | awk -v new_config="$NEW_OLLAMA_CONFIG" '
+            BEGIN {in_ollama_block=0; printed_block=0}
+            /^[[:space:]]*ollama:/ {in_ollama_block=1; print new_config; printed_block=1; next}
+            /^[[:space:]]*[a-zA-Z]/ {if(in_ollama_block && $0 !~ /^[[:space:]]*ollama:/) {in_ollama_block=0; printed_block=0}}
+            {if(!in_ollama_block) print}
+            ' > docker-compose.yml.new
+            
+            # 替换原文件
+            mv docker-compose.yml.new docker-compose.yml
+            
+            echo -e "${GREEN}已完全重写 Ollama 服务配置${RESET}"
+            echo -e "${YELLOW}修改后的 ollama 服务配置:${RESET}"
+            grep -A 20 "ollama:" docker-compose.yml
         else
-            # 如果没有command行，在ollama服务配置中添加
-            sed -i "/ollama:/a\\    command: ['ollama', 'serve', '--port', '$ollama_port']" docker-compose.yml
+            echo -e "${RED}无法在 docker-compose.yml 中找到 ollama 服务配置，无法修改端口${RESET}"
+            return 1
         fi
         
-        # 在 .env 文件中添加 OLLAMA_BASE_URL 配置，使用新端口
-        # 检查是否已有OLLAMA_BASE_URL配置
+        # 确保 .env 文件中有正确的 OLLAMA_BASE_URL 配置
+        echo -e "${GREEN}更新应用程序连接配置，使用新的 Ollama 端口${RESET}"
         if grep -q "OLLAMA_BASE_URL" .env; then
             sed -i "s|OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://node-ollama:$ollama_port|" .env
         else
             echo "OLLAMA_BASE_URL=http://node-ollama:$ollama_port" >> .env
         fi
+        
+        echo -e "${GREEN}docker-compose.yml 和 .env 文件修改完成${RESET}"
     fi
     
     # 启动节点
@@ -249,7 +290,7 @@ install_naptha_node() {
     echo -e "${GREEN}Naptha 节点已成功启动！${RESET}"
     echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
     if [ "$ollama_port" != "11434" ]; then
-        echo -e "Ollama 端口: ${YELLOW}$ollama_port${RESET} (已映射到容器内的 11434 端口)"
+        echo -e "Ollama 端口: ${YELLOW}$ollama_port${RESET} (容器内外均使用此端口)"
     fi
 }
 
