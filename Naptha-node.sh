@@ -190,7 +190,7 @@ install_naptha_node() {
     
     # 克隆仓库
     echo -e "${GREEN}正在克隆 Naptha 节点仓库...${RESET}"
-    git clone https://github.com/NapthaAI/naptha-node.git "$INSTALL_DIR"
+    git clone https://github.com/NapthaAI/node.git "$INSTALL_DIR"
     
     # 进入安装目录
     cd "$INSTALL_DIR"
@@ -224,8 +224,6 @@ install_naptha_node() {
         
         # 创建新的 docker-compose.yml 文件
         cat > docker-compose.yml << EOF
-version: '3.8'
-
 services:
   ollama:
     container_name: node-ollama
@@ -248,7 +246,7 @@ services:
 
   naptha:
     container_name: naptha-node
-    image: napthaai/naptha-node:main
+    image: napthaai/node:latest
     restart: unless-stopped
     ports:
       - "7001:7001"
