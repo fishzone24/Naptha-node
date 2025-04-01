@@ -215,7 +215,7 @@ install_naptha_node() {
     fi
     
     # 修改 docker-compose.yml 文件中的 Ollama 端口
-    if [ -f "docker-compose.yml" ] && [ "$ollama_port" != "11434" ]; then
+    if [ -f "docker-compose.yml" ]; then
         echo -e "${GREEN}修改 Ollama 端口为 ${YELLOW}$ollama_port${RESET}"
         
         # 备份原始 docker-compose.yml 文件
