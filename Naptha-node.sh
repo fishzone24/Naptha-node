@@ -222,28 +222,67 @@ install_naptha_node() {
         cp docker-compose.yml docker-compose.yml.bak
         echo -e "${GREEN}已备份原始 docker-compose.yml 文件为 ${YELLOW}docker-compose.yml.bak${RESET}"
         
-        # 直接使用 sed 替换端口映射
-        sed -i "s/11434:11434/$ollama_port:$ollama_port/g" docker-compose.yml
+        # 创建新的 docker-compose.yml 文件
+        cat > docker-compose.yml << EOF
+version: '3.8'
+
+services:
+  ollama:
+    container_name: node-ollama
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    command: ["ollama", "serve", "--port", "$ollama_port"]
+    ports:
+      - "$ollama_port:$ollama_port"
+    environment:
+      - OLLAMA_PORT=$ollama_port
+    volumes:
+      - ~/.ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  naptha:
+    container_name: naptha-node
+    image: napthaai/naptha-node:latest
+    restart: unless-stopped
+    ports:
+      - "7001:7001"
+    environment:
+      - NODE_PRIVATE_KEY=${NODE_PRIVATE_KEY}
+      - NODE_PUBLIC_KEY=${NODE_PUBLIC_KEY}
+      - NODE_PORT=7001
+      - OLLAMA_BASE_URL=http://node-ollama:$ollama_port
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+EOF
+
+        echo -e "${GREEN}已完全重写 docker-compose.yml 文件${RESET}"
+        echo -e "${YELLOW}新的 docker-compose.yml 配置:${RESET}"
+        cat docker-compose.yml
         
-        # 更新 .env 文件中的 OLLAMA 相关配置
-        echo -e "${GREEN}更新 OLLAMA 配置环境变量...${RESET}"
+        # 确保 .env 文件中有正确的 OLLAMA_BASE_URL 配置
+        echo -e "${GREEN}更新应用程序连接配置，使用新的 Ollama 端口${RESET}"
         if grep -q "OLLAMA_BASE_URL" .env; then
             sed -i "s|OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://node-ollama:$ollama_port|" .env
         else
             echo "OLLAMA_BASE_URL=http://node-ollama:$ollama_port" >> .env
         fi
         
-        # 修改 docker-compose.yml 中的环境变量
-        if grep -q "environment:" docker-compose.yml && grep -q "ollama:" docker-compose.yml; then
-            sed -i "/ollama:/,/environment:/ s|environment:.*|environment:\\n      - OLLAMA_PORT=$ollama_port|" docker-compose.yml
-        else
-            sed -i "/ollama:/a\\    environment:\\n      - OLLAMA_PORT=$ollama_port" docker-compose.yml
-        fi
-        
-        echo -e "${GREEN}docker-compose.yml 和相关配置文件修改完成${RESET}"
-        echo -e "${YELLOW}修改后的 ollama 服务配置:${RESET}"
-        grep -A 10 "ollama:" docker-compose.yml
-        echo -e "${BLUE}----------------------------------------${RESET}"
+        echo -e "${GREEN}docker-compose.yml 和 .env 文件修改完成${RESET}"
     fi
     
     # 启动节点
