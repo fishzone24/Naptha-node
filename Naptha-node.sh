@@ -248,7 +248,7 @@ services:
 
   naptha:
     container_name: naptha-node
-    image: napthaai/naptha-node:latest
+    image: napthaai/naptha-node:main
     restart: unless-stopped
     ports:
       - "7001:7001"
