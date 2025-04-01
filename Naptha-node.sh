@@ -294,6 +294,10 @@ EOF
     if [ "$ollama_port" != "11434" ]; then
         echo -e "Ollama 端口: ${YELLOW}$ollama_port${RESET} (容器内外均使用此端口)"
     fi
+    
+    # 等待用户确认
+    echo -e "\n${YELLOW}安装完成！按任意键返回主菜单...${RESET}"
+    read -n 1 -s -r
 }
 
 # 查看 PRIVATE_KEY
