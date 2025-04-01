@@ -428,7 +428,7 @@ view_logs() {
     fi
     
     # 检查容器是否在运行
-    if ! docker compose ps | grep -q "naptha-node"; then
+    if ! docker-compose ps | grep -q "naptha-node"; then
         echo -e "${RED}错误：Naptha 节点未运行${RESET}"
         echo -e "${YELLOW}请先启动节点${RESET}"
         read -n 1 -s -r -p "按任意键返回主菜单..."
@@ -438,8 +438,8 @@ view_logs() {
     echo -e "${GREEN}正在获取节点日志...${RESET}"
     echo -e "${YELLOW}按 Ctrl+C 可以退出日志查看${RESET}"
     
-    # 使用 docker compose 查看日志
-    docker compose logs -f --tail=300
+    # 使用 docker-compose 查看日志
+    docker-compose logs -f --tail=300
     
     # 等待用户确认
     echo -e "\n${YELLOW}按任意键返回主菜单...${RESET}"
