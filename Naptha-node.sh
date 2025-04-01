@@ -65,6 +65,40 @@ echo -e "${YELLOW}脚本作者: fishzone24 - 推特: https://x.com/fishzone24${R
 echo -e "${YELLOW}此脚本为免费开源脚本，如有问题请提交 issue${RESET}"
 echo -e "${BLUE}==================================================================${RESET}"
 
+# 生成随机端口号 (10000-65535)
+generate_random_port() {
+    echo $(( ( RANDOM % 55535 ) + 10000 ))
+}
+
+# 检查端口是否可用
+check_port_available() {
+    local port=$1
+    if netstat -tuln | grep -q ":$port "; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+# 获取可用端口
+get_available_port() {
+    local port
+    local max_attempts=10
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        port=$(generate_random_port)
+        if check_port_available $port; then
+            echo $port
+            return 0
+        fi
+        attempt=$((attempt + 1))
+    done
+    
+    echo -e "${RED}无法找到可用端口，请手动指定端口${RESET}"
+    return 1
+}
+
 # 检查并安装依赖
 check_dependencies() {
     echo -e "${GREEN}正在检查系统依赖...${RESET}"
@@ -112,6 +146,42 @@ install_naptha_node() {
     # 检查依赖
     check_dependencies
     
+    # 询问 Ollama 端口
+    local ollama_port
+    echo -e "${YELLOW}Ollama 默认端口为 11434，如果该端口已被占用，您可以选择：${RESET}"
+    echo -e "1. 使用随机端口"
+    echo -e "2. 手动指定端口"
+    echo -e "3. 使用默认端口 (11434)"
+    read -p "请选择 [1/2/3]: " port_choice
+    
+    case $port_choice in
+        1)
+            ollama_port=$(get_available_port)
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}获取随机端口失败，请稍后再试或手动指定端口${RESET}"
+                return 1
+            fi
+            echo -e "${GREEN}已选择随机端口: ${YELLOW}$ollama_port${RESET}"
+            ;;
+        2)
+            read -p "请输入要使用的端口号 (10000-65535): " custom_port
+            if ! [[ "$custom_port" =~ ^[0-9]+$ ]] || [ "$custom_port" -lt 10000 ] || [ "$custom_port" -gt 65535 ]; then
+                echo -e "${RED}无效的端口号，端口号必须是 10000-65535 之间的数字${RESET}"
+                return 1
+            fi
+            if ! check_port_available $custom_port; then
+                echo -e "${RED}端口 $custom_port 已被占用，请选择其他端口${RESET}"
+                return 1
+            fi
+            ollama_port=$custom_port
+            echo -e "${GREEN}已选择端口: ${YELLOW}$ollama_port${RESET}"
+            ;;
+        3|*)
+            ollama_port=11434
+            echo -e "${GREEN}将使用默认端口: ${YELLOW}$ollama_port${RESET}"
+            ;;
+    esac
+    
     # 检查并删除已存在的安装目录
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}目标目录已存在，正在删除...${RESET}"
@@ -144,12 +214,24 @@ install_naptha_node() {
         return 1
     fi
     
+    # 修改 docker-compose.yml 文件中的 Ollama 端口
+    if [ -f "docker-compose.yml" ] && [ "$ollama_port" != "11434" ]; then
+        echo -e "${GREEN}修改 Ollama 端口为 ${YELLOW}$ollama_port${RESET}"
+        sed -i "s/- \"11434:11434\"/- \"$ollama_port:11434\"/" docker-compose.yml
+        
+        # 在 .env 文件中添加 OLLAMA_BASE_URL 配置
+        echo "OLLAMA_BASE_URL=http://node-ollama:11434" >> .env
+    fi
+    
     # 启动节点
     echo -e "${GREEN}正在启动 Naptha 节点...${RESET}"
     bash launch.sh
     
     echo -e "${GREEN}Naptha 节点已成功启动！${RESET}"
     echo -e "访问地址: ${YELLOW}http://$(hostname -I | awk '{print $1}'):7001${RESET}"
+    if [ "$ollama_port" != "11434" ]; then
+        echo -e "Ollama 端口: ${YELLOW}$ollama_port${RESET} (已映射到容器内的 11434 端口)"
+    fi
 }
 
 # 查看 PRIVATE_KEY
