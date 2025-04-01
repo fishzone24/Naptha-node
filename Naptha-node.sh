@@ -305,8 +305,8 @@ EOF
         
         echo -e "${GREEN}docker-compose.yml 和相关配置文件修改完成${RESET}"
         echo -e "${YELLOW}修改后的 ollama 服务配置:${RESET}"
-        # 使用 awk 来显示 ollama 服务的配置
-        awk '/ollama:/,/^[a-z]/ {if($0 ~ /^[a-z]/) exit; print}' docker-compose.yml
+        # 使用 grep 和 sed 来显示 ollama 服务的配置
+        grep -A 10 "ollama:" docker-compose.yml | grep -v "^[a-z]"
         echo -e "${BLUE}----------------------------------------${RESET}"
     fi
     
