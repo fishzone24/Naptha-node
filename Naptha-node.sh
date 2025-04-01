@@ -73,7 +73,7 @@ check_dependencies() {
     if ! dpkg -l | grep -q "python3-venv"; then
         echo -e "${YELLOW}检测到 python3-venv 未安装，正在安装...${RESET}"
         sudo apt update
-        sudo apt install -y python3.10-venv
+        sudo apt install -y python3-venv
     fi
     
     # 检查并安装 Docker
