@@ -222,16 +222,10 @@ install_naptha_node() {
         cp docker-compose.yml docker-compose.yml.bak
         echo -e "${GREEN}已备份原始 docker-compose.yml 文件为 ${YELLOW}docker-compose.yml.bak${RESET}"
         
-        # 检查能否直接使用 sed 替换端口映射
-        if grep -q "11434:11434" docker-compose.yml; then
-            echo -e "${GREEN}使用直接替换法修改端口映射...${RESET}"
-            sed -i "s/11434:11434/$ollama_port:$ollama_port/g" docker-compose.yml
-            echo -e "${GREEN}端口映射已修改${RESET}"
-        else
-            echo -e "${YELLOW}未找到标准端口映射格式，尝试其他方法...${RESET}"
-        fi
+        # 直接使用 sed 替换端口映射
+        sed -i "s/11434:11434/$ollama_port:$ollama_port/g" docker-compose.yml
         
-        # 创建 .env 文件中的 OLLAMA 相关配置
+        # 更新 .env 文件中的 OLLAMA 相关配置
         echo -e "${GREEN}更新 OLLAMA 配置环境变量...${RESET}"
         if grep -q "OLLAMA_BASE_URL" .env; then
             sed -i "s|OLLAMA_BASE_URL=.*|OLLAMA_BASE_URL=http://node-ollama:$ollama_port|" .env
@@ -239,74 +233,16 @@ install_naptha_node() {
             echo "OLLAMA_BASE_URL=http://node-ollama:$ollama_port" >> .env
         fi
         
-        # 直接编辑 launch.sh 脚本来修改 ollama 服务的启动命令
-        echo -e "${GREEN}修改 launch.sh 脚本以使用自定义端口...${RESET}"
-        if [ -f "launch.sh" ]; then
-            cp launch.sh launch.sh.bak
-            
-            # 尝试找到启动 docker-compose 的部分，并添加环境变量设置
-            if grep -q "docker-compose up" launch.sh; then
-                # 在 docker-compose up 命令前添加端口环境变量
-                sed -i "/docker-compose up/ s/docker-compose/OLLAMA_PORT=$ollama_port docker-compose/" launch.sh
-                echo -e "${GREEN}已在 launch.sh 中添加 OLLAMA_PORT 环境变量${RESET}"
-            fi
-            
-            # 现在，创建一个自定义的 ollama-entrypoint.sh 脚本，以确保容器启动时使用正确的端口
-            echo -e "${GREEN}创建 Ollama 容器的自定义入口点脚本...${RESET}"
-            cat > ollama-entrypoint.sh << EOF
-#!/bin/sh
-# 自定义的 Ollama 启动脚本，确保使用指定的端口
-OLLAMA_PORT=\${OLLAMA_PORT:-11434}
-echo "启动 Ollama 服务，使用端口: \$OLLAMA_PORT"
-exec ollama serve --port \$OLLAMA_PORT
-EOF
-            chmod +x ollama-entrypoint.sh
-            
-            # 修改 docker-compose.yml 文件，添加入口点脚本配置
-            if grep -q "ollama:" docker-compose.yml; then
-                # 检查是否已经有 entrypoint 配置
-                if grep -q "entrypoint:" docker-compose.yml && grep -q "ollama:" docker-compose.yml; then
-                    # 已有 entrypoint，我们替换它
-                    sed -i "/ollama:/,/entrypoint:/ s|entrypoint:.*|entrypoint: /app/ollama-entrypoint.sh|" docker-compose.yml
-                else
-                    # 没有 entrypoint，我们添加它
-                    sed -i "/ollama:/a\\    entrypoint: /app/ollama-entrypoint.sh" docker-compose.yml
-                fi
-                
-                # 添加卷映射，确保入口点脚本能够在容器中使用
-                if grep -q "volumes:" docker-compose.yml && grep -q "ollama:" docker-compose.yml; then
-                    # 在已有的 volumes 部分添加新映射
-                    awk '/ollama:/,/volumes:/ {print; if($0 ~ /volumes:/) print "      - ./ollama-entrypoint.sh:/app/ollama-entrypoint.sh"; next} 1' docker-compose.yml > docker-compose.yml.new
-                    mv docker-compose.yml.new docker-compose.yml
-                else
-                    # 添加新的 volumes 部分
-                    sed -i "/ollama:/a\\    volumes:\\n      - ./ollama-entrypoint.sh:/app/ollama-entrypoint.sh" docker-compose.yml
-                fi
-                
-                echo -e "${GREEN}已修改 docker-compose.yml 添加自定义入口点脚本${RESET}"
-            fi
+        # 修改 docker-compose.yml 中的环境变量
+        if grep -q "environment:" docker-compose.yml && grep -q "ollama:" docker-compose.yml; then
+            sed -i "/ollama:/,/environment:/ s|environment:.*|environment:\\n      - OLLAMA_PORT=$ollama_port|" docker-compose.yml
         else
-            echo -e "${RED}未找到 launch.sh 文件，无法修改启动命令${RESET}"
-        fi
-        
-        # 为了更保险起见，再修改一次 docker-compose.yml 中的环境变量
-        if grep -q "ollama:" docker-compose.yml; then
-            # 检查是否已有 environment 部分
-            if grep -q "environment:" docker-compose.yml && grep -q "ollama:" docker-compose.yml; then
-                # 添加 OLLAMA_PORT 到已有的环境变量中
-                sed -i "/ollama:/,/environment:/ s|environment:.*|environment:\\n      - OLLAMA_PORT=$ollama_port|" docker-compose.yml
-            else
-                # 添加新的 environment 部分
-                sed -i "/ollama:/a\\    environment:\\n      - OLLAMA_PORT=$ollama_port" docker-compose.yml
-            fi
-            
-            echo -e "${GREEN}已在 docker-compose.yml 中添加 OLLAMA_PORT 环境变量${RESET}"
+            sed -i "/ollama:/a\\    environment:\\n      - OLLAMA_PORT=$ollama_port" docker-compose.yml
         fi
         
         echo -e "${GREEN}docker-compose.yml 和相关配置文件修改完成${RESET}"
         echo -e "${YELLOW}修改后的 ollama 服务配置:${RESET}"
-        # 使用 grep 和 sed 来显示 ollama 服务的配置
-        grep -A 10 "ollama:" docker-compose.yml | grep -v "^[a-z]"
+        grep -A 10 "ollama:" docker-compose.yml
         echo -e "${BLUE}----------------------------------------${RESET}"
     fi
     
